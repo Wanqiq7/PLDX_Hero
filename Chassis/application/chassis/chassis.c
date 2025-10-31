@@ -12,16 +12,17 @@
  */
 
 #include "chassis.h"
+#include "controller.h"
 #include "dji_motor.h"
 #include "message_center.h"
 #include "referee_task.h"
 #include "robot_def.h"
 #include "super_cap.h"
 #include "user_lib.h"
+#include "power_controller.h"  // 新增：独立的功率控制模块
 
 #include "arm_math.h"
 #include "bsp_dwt.h"
-#include "controller.h"
 #include "general_def.h"
 #include "referee_UI.h"
 
@@ -65,6 +66,8 @@ static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb,
 static PIDInstance chassis_follow_pid; // 底盘跟随云台PID控制器
 static float last_follow_wz = 0.0f; // 记录上一次跟随模式的wz输出，用于一阶滤波
 
+/* 功率控制相关变量已移至独立的power_controller模块 */
+
 /* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
 static float chassis_vx, chassis_vy;     // 将云台系的速度投影到底盘
 static float vt_lf, vt_rf, vt_lb, vt_rb; // 底盘速度解算后的临时输出,待进行限幅
@@ -90,15 +93,6 @@ static float ff_spd_lf, ff_spd_rf, ff_spd_lb, ff_spd_rb;
 
 #define MAX_SLOPE_COMP_CMD 3000
 
-// 电机功率模型参数（需按电机/减速比/摩擦标定）：
-// Pin = TORQUE_COEFF * I * rpm + POWER_MODEL_K2 * rpm^2 + POWER_MODEL_K1 * I^2
-// + POWER_MODEL_CONST
-#define TORQUE_COEFF                                                           \
-  1.99688994e-6f // 转矩系数（将电流指令×轮侧转速换算为机械功率）
-#define POWER_MODEL_K1 1.23e-07f  // 电阻损耗系数
-#define POWER_MODEL_K2 1.453e-07f // 阻尼/风阻损耗系数
-#define POWER_MODEL_CONST 4.081f  // 静态损耗
-
 void ChassisInit() {
   // 四个轮子的参数一样,改tx_id和反转标志位即可
   Motor_Init_Config_s chassis_motor_config = {
@@ -107,13 +101,14 @@ void ChassisInit() {
           {
               .speed_PID =
                   {
-                      .Kp = 1.38f,         // 纯P控制，适当增大Kp补偿稳态误差
-                      .Ki = 0.0f,         // 关闭积分，避免功耗问题
-                      .Kd = 0.06f,         // 暂不使用D项
+                      .Kp = 1.38f, // 纯P控制，适当增大Kp补偿稳态误差
+                      .Ki = 0.0f,  // 关闭积分，避免功耗问题
+                      .Kd = 0.06f, // 暂不使用D项
                       .Derivative_LPF_RC = 0.06f,
                       .IntegralLimit = 0.0f, // 无积分项，设为0
-                      .Improve = PID_DerivativeFilter, // 关闭所有改进特性，纯P控制
-                      .MaxOut = 20000,             // 保持较大的输出限制
+                      .Improve =
+                          PID_DerivativeFilter, // 关闭所有改进特性，纯P控制
+                      .MaxOut = 20000,          // 保持较大的输出限制
                   },
               .current_PID =
                   {
@@ -135,27 +130,32 @@ void ChassisInit() {
       .motor_type = M3508,
   };
   // 设置速度前馈
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr = &ff_spd_lf;
-  chassis_motor_config.controller_setting_init_config.feedforward_flag = SPEED_FEEDFORWARD;
-  
+  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
+      &ff_spd_lf;
+  chassis_motor_config.controller_setting_init_config.feedforward_flag =
+      SPEED_FEEDFORWARD;
+
   chassis_motor_config.can_init_config.tx_id = 2;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_REVERSE; // 修改：左前电机反转
   motor_lf = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr = &ff_spd_rf;
+  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
+      &ff_spd_rf;
   chassis_motor_config.can_init_config.tx_id = 3;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_NORMAL; // 修改：右前电机反转
   motor_rf = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr = &ff_spd_lb;
+  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
+      &ff_spd_lb;
   chassis_motor_config.can_init_config.tx_id = 1;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_NORMAL; // 保持：左后电机正常
   motor_lb = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr = &ff_spd_rb;
+  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
+      &ff_spd_rb;
   chassis_motor_config.can_init_config.tx_id = 4;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_REVERSE; // 保持：右后电机正常
@@ -187,6 +187,17 @@ void ChassisInit() {
   };
   chasiss_can_comm = CANCommInit(&comm_conf); // can comm初始化
 #endif                                        // CHASSIS_BOARD
+
+  // 功率控制器初始化（独立模块）
+  PowerControllerConfig_t power_config = {
+      .k1_init = 0.22f,              // 转速损耗系数初始值
+      .k2_init = 1.2f,               // 力矩损耗系数初始值
+      .k3 = 2.78f,                   // 静态功率损耗
+      .rls_lambda = 0.9999f,         // RLS遗忘因子
+      .torque_constant = 0.3f,       // M3508电机转矩常数 (Nm/A)
+      .current_scale = 20.0f / 16384.0f,  // CAN指令值转电流系数
+  };
+  PowerControllerInit(&power_config);
 
 #ifdef ONE_BOARD // 单板控制整车,则通过pubsub来传递消息
   chassis_sub = SubRegister("chassis_cmd", sizeof(Chassis_Ctrl_Cmd_s));
@@ -333,112 +344,79 @@ static void ResistanceCompensation() {
   // 注意：FRICTION_COMP_* 原本是电流值，需要转换为速度增量
   // 简化方案：将摩擦力补偿值缩放后加到速度前馈
   float friction_to_speed_scale = 0.05f; // 摩擦补偿到速度的缩放系数，需实测调试
-  
+
   // 左前
   ff_spd_lf += ComputeFrictionFF(motor_lf->measure.speed_aps, vt_lf,
-                                 FRICTION_COMP_LF, linear_window_aps) * friction_to_speed_scale;
+                                 FRICTION_COMP_LF, linear_window_aps) *
+               friction_to_speed_scale;
   // 右前
   ff_spd_rf += ComputeFrictionFF(motor_rf->measure.speed_aps, vt_rf,
-                                 FRICTION_COMP_RF, linear_window_aps) * friction_to_speed_scale;
+                                 FRICTION_COMP_RF, linear_window_aps) *
+               friction_to_speed_scale;
   // 左后
   ff_spd_lb += ComputeFrictionFF(motor_lb->measure.speed_aps, vt_lb,
-                                 FRICTION_COMP_LB, linear_window_aps) * friction_to_speed_scale;
+                                 FRICTION_COMP_LB, linear_window_aps) *
+               friction_to_speed_scale;
   // 右后
   ff_spd_rb += ComputeFrictionFF(motor_rb->measure.speed_aps, vt_rb,
-                                 FRICTION_COMP_RB, linear_window_aps) * friction_to_speed_scale;
+                                 FRICTION_COMP_RB, linear_window_aps) *
+               friction_to_speed_scale;
 }
 
 /**
- * @brief 根据裁判系统和电容剩余容量对输出进行限制并设置电机参考值
- *
+ * @brief 功率控制并下发电机参考值（重构版：调用独立功率控制模块）
+ * @note  功率控制逻辑已移至power_controller模块
  */
-/* 预测单个电机的输入功率 */
-static inline float predict_motor_power(float I, float rpm) {
-  float p = TORQUE_COEFF * I * rpm + POWER_MODEL_K2 * rpm * rpm +
-            POWER_MODEL_K1 * I * I + POWER_MODEL_CONST;
-  return p > 0.0f ? p : 0.0f;
-}
-
 static void LimitChassisOutput() {
-  // 1) 读取功率上限（裁判系统给出的底盘功率上限，单位: W）
-  /*  float max_power_w = 0.0f;
-   if (referee_data)
-     max_power_w = (float)referee_data->GameRobotState.chassis_power_limit;
+#if POWER_CONTROLLER_ENABLE
+  // 1. 构造功率对象数组
+  PowerMotorObj_t motor_objs[4] = {
+      {
+          .pid_output = motor_lf->motor_controller.speed_PID.Output,
+          .current_av = motor_lf->measure.speed_aps * DEGREE_2_RAD,
+          .target_av = vt_lf * DEGREE_2_RAD,
+          .pid_max_output = 20000.0f,
+      },
+      {
+          .pid_output = motor_rf->motor_controller.speed_PID.Output,
+          .current_av = motor_rf->measure.speed_aps * DEGREE_2_RAD,
+          .target_av = vt_rf * DEGREE_2_RAD,
+          .pid_max_output = 20000.0f,
+      },
+      {
+          .pid_output = motor_lb->motor_controller.speed_PID.Output,
+          .current_av = motor_lb->measure.speed_aps * DEGREE_2_RAD,
+          .target_av = vt_lb * DEGREE_2_RAD,
+          .pid_max_output = 20000.0f,
+      },
+      {
+          .pid_output = motor_rb->motor_controller.speed_PID.Output,
+          .current_av = motor_rb->measure.speed_aps * DEGREE_2_RAD,
+          .target_av = vt_rb * DEGREE_2_RAD,
+          .pid_max_output = 20000.0f,
+      },
+  };
 
-   // 2) 预测当前指令将导致的电机输入功率：
-   // 使用"当前周期将要发送"的电流目标近似：I_ref = current_PID.Ref ≈
-   speed环输出
-   // + 前馈（此处用 current 前馈近似）， 简化实现：用 current 前馈 ff_cur_*
-   近似
-   // I_ref，速度项已在下层 PID 内部生成。 转速使用实时测量 rpm = speed_aps /
-   // RPM_2_ANGLE_PER_SEC。
-   float rpm_lf = motor_lf->measure.speed_aps / RPM_2_ANGLE_PER_SEC;
-   float rpm_rf = motor_rf->measure.speed_aps / RPM_2_ANGLE_PER_SEC;
-   float rpm_lb = motor_lb->measure.speed_aps / RPM_2_ANGLE_PER_SEC;
-   float rpm_rb = motor_rb->measure.speed_aps / RPM_2_ANGLE_PER_SEC;
+  // 2. 调用功率控制器获取限制后的输出
+  float limited_output[4];
+  PowerGetLimitedOutput(motor_objs, limited_output);
 
-   float Iref_lf = ff_cur_lf;
-   float Iref_rf = ff_cur_rf;
-   float Iref_lb = ff_cur_lb;
-   float Iref_rb = ff_cur_rb;
-
-   // 3) 逐电机根据功率模型计算预测功率（若出现负功率，按0处理）
-   float p_lf = predict_motor_power(Iref_lf, rpm_lf);
-   float p_rf = predict_motor_power(Iref_rf, rpm_rf);
-   float p_lb = predict_motor_power(Iref_lb, rpm_lb);
-   float p_rb = predict_motor_power(Iref_rb, rpm_rb);
-
-   float p_sum = p_lf + p_rf + p_lb + p_rb;
-
-   // 4) 若预测超过功率上限，等比例缩放"扭矩相关量"（这里用 current
-   // 前馈作为扭矩代理）
-   if (max_power_w > 1e-3f && p_sum > max_power_w) {
-     float k = max_power_w / p_sum;
-     // 将缩放作用于参考层：速度参考和电流前馈同时按比例收缩，避免下层超调
-     vt_lf *= k;
-     vt_rf *= k;
-     vt_lb *= k;
-     vt_rb *= k;
-     ff_cur_lf *= k;
-     ff_cur_rf *= k;
-     ff_cur_lb *= k;
-     ff_cur_rb *= k;
-   } */
-
-  // 5) 下发参考
+  // 3. 下发限制后的电机参考值（转换回角度/秒）
+  DJIMotorSetRef(motor_lf, limited_output[0]);
+  DJIMotorSetRef(motor_rf, limited_output[1]);
+  DJIMotorSetRef(motor_lb, limited_output[2]);
+  DJIMotorSetRef(motor_rb, limited_output[3]);
+#else
+  // 不使用功率控制时，直接下发原始参考值
   DJIMotorSetRef(motor_lf, vt_lf);
   DJIMotorSetRef(motor_rf, vt_rf);
   DJIMotorSetRef(motor_lb, vt_lb);
   DJIMotorSetRef(motor_rb, vt_rb);
+#endif
 }
 
 static void ClearFeedforward() {
   ff_spd_lf = ff_spd_rf = ff_spd_lb = ff_spd_rb = 0.0f;
-}
-
-/**
- * @brief 对单个速度值应用死区处理
- * @param speed_value 输入的速度值
- * @param threshold 死区阈值
- * @return 处理后的速度值，小于阈值时返回0
- * @note 用于消除小速度指令，防止编码器噪声导致的抖动
- */
-static inline float ApplySingleSpeedDeadband(float speed_value,
-                                             float threshold) {
-  return (fabsf(speed_value) < threshold) ? 0.0f : speed_value;
-}
-
-/**
- * @brief 对底盘四个轮子的速度指令应用死区处理
- * @param threshold 死区阈值(角度/秒)
- * @note 防止零速附近的抖动，提高控制稳定性
- *       遵循模块化设计原则，将重复操作封装为可复用函数
- */
-static void ApplyChassisSpeedDeadband(float threshold) {
-  vt_lf = ApplySingleSpeedDeadband(vt_lf, threshold);
-  vt_rf = ApplySingleSpeedDeadband(vt_rf, threshold);
-  vt_lb = ApplySingleSpeedDeadband(vt_lb, threshold);
-  vt_rb = ApplySingleSpeedDeadband(vt_rb, threshold);
 }
 
 /**
@@ -486,17 +464,18 @@ void ChassisTask() {
     break;
 
   case CHASSIS_FOLLOW_GIMBAL_YAW: { // 跟随云台,使用PID+一阶滤波控制
-    // PID控制: 期望值为0(对齐),反馈值为offset_angle(偏差角度)
+    // PID控制: 期望值为0(对齐),反馈值为near_center_error(就近回位误差)
     // 输出为底盘旋转角速度,负号是因为角度偏差和底盘旋转方向相反
+    // 注意: 使用near_center_error而非offset_angle,支持车头翻转优化(就近回位)
     float pid_output =
-        -PIDCalculate(&chassis_follow_pid, chassis_cmd_recv.offset_angle, 0.0f);
+        -PIDCalculate(&chassis_follow_pid, chassis_cmd_recv.near_center_error, 0.0f);
 
     // 使用一阶低通滤波器平滑过渡
     // K值说明：K越小滤波越强(保持原有运动状态更多)，K越大响应越快
     // 推荐值: 0.2~0.4
     // - 小陀螺切换时建议用0.2(保持更多旋转动量)
     // - 静止跟随时可以用0.3-0.4(响应更快)
-    float filter_K = 0.5f; // 可根据实际调试
+    float filter_K = 0.65f; // 可根据实际调试
     chassis_cmd_recv.wz =
         LowPassFilter_Float(pid_output, filter_K, &last_follow_wz);
     break;
@@ -528,13 +507,48 @@ void ChassisTask() {
   // ApplyChassisSpeedDeadband(SPEED_DEADBAND_THRESHOLD);
 
   // 2. 清零当周期电流前馈
-  //ClearFeedforward();
+  // ClearFeedforward();
 
   // 3. 计算坡度补偿前馈（如果底盘需要爬坡则启用）
   // SlopeCompensation();  // 可选：上下坡场景启用
 
   // 4. 计算阻力补偿前馈（推荐启用！）
-  //ResistanceCompensation(); // 启用摩擦力补偿
+  // ResistanceCompensation(); // 启用摩擦力补偿
+
+#if POWER_CONTROLLER_ENABLE
+  // 4.5. 更新功率控制器数据（在功率限制前更新）
+  // 更新裁判系统数据
+  if (referee_data) {
+    PowerUpdateRefereeData(
+        (float)referee_data->GameRobotState.chassis_power_limit,
+        (float)referee_data->PowerHeatData.buffer_energy,
+        (float)referee_data->PowerHeatData.chassis_power);
+  }
+
+  // 更新超级电容数据
+  uint8_t cap_online = (cap && cap->can_ins->rx_len > 0) ? 1 : 0;
+  uint8_t cap_voltage = cap_online ? cap->cap_msg.vol : 0;
+  PowerUpdateCapData(cap_voltage, cap_online);
+
+  // 更新电机反馈数据（用于RLS参数辨识）
+  float motor_speeds[4] = {
+      motor_lf->measure.speed_aps * DEGREE_2_RAD,
+      motor_rf->measure.speed_aps * DEGREE_2_RAD,
+      motor_lb->measure.speed_aps * DEGREE_2_RAD,
+      motor_rb->measure.speed_aps * DEGREE_2_RAD,
+  };
+  
+  // 估算电机转矩（通过PID输出转换）
+  const float TORQUE_CONSTANT = 0.3f;              // Nm/A
+  const float CURRENT_SCALE = 20.0f / 16384.0f;    // CAN指令值转电流
+  float motor_torques[4] = {
+      motor_lf->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
+      motor_rf->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
+      motor_lb->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
+      motor_rb->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
+  };
+  PowerUpdateMotorFeedback(motor_speeds, motor_torques);
+#endif
 
   // 5. 根据裁判系统的反馈数据和电容数据对输出限幅并设定闭环参考值
   LimitChassisOutput();

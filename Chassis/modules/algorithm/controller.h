@@ -133,4 +133,67 @@ void PIDInit(PIDInstance *pid, PID_Init_Config_s *config);
  */
 float PIDCalculate(PIDInstance *pid, float measure, float ref);
 
+/* ======================== RLS递归最小二乘算法 ======================== */
+
+/**
+ * @brief RLS算法实例，固定为2维
+ * @note  用于电机功率模型参数识别: P = τΩ + k1|Ω| + k2τ^2 + k3
+ *        识别参数: k1(转速损耗系数), k2(力矩损耗系数)
+ */
+typedef struct
+{
+    float lambda;                    // 遗忘因子(0.9~1.0)，越接近1收敛越慢但越稳定
+    float delta;                     // 初始化转移矩阵的非奇异值
+    
+    float trans_matrix[4];           // 2x2转移矩阵 P(k)
+    float gain_vector[2];            // 2x1增益向量 K(k)
+    float params_vector[2];          // 2x1参数向量 [k1, k2]
+    
+    uint32_t update_cnt;             // 更新计数
+} RLSInstance;
+
+/**
+ * @brief RLS算法初始化配置
+ */
+typedef struct
+{
+    float lambda;                    // 遗忘因子，推荐0.9999
+    float delta;                     // 初始化值，推荐1e-5
+    float init_k1;                   // k1初始值，推荐0.22
+    float init_k2;                   // k2初始值，推荐1.2
+} RLS_Init_Config_s;
+
+/**
+ * @brief 初始化RLS实例
+ * 
+ * @param rls RLS实例指针
+ * @param config RLS初始化配置
+ */
+void RLSInit(RLSInstance *rls, RLS_Init_Config_s *config);
+
+/**
+ * @brief RLS算法更新一次
+ * 
+ * @param rls RLS实例指针
+ * @param sample_vector 采样向量 [|ω|, τ^2]，2x1向量
+ * @param actual_output 实际输出值(实测功率损耗)
+ */
+void RLSUpdate(RLSInstance *rls, float sample_vector[2], float actual_output);
+
+/**
+ * @brief 重置RLS算法
+ * 
+ * @param rls RLS实例指针
+ */
+void RLSReset(RLSInstance *rls);
+
+/**
+ * @brief 获取当前识别的参数
+ * 
+ * @param rls RLS实例指针
+ * @param k1 输出k1参数指针
+ * @param k2 输出k2参数指针
+ */
+void RLSGetParams(RLSInstance *rls, float *k1, float *k2);
+
 #endif

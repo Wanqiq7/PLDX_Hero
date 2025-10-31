@@ -60,6 +60,10 @@
 #define DIST_CG_FRONT_AXLE 280 // 重心距前轴距离,单位mm
 #define DIST_CG_REAR_AXLE 280  // 重心距后轴距离,单位mm
 #define CG_HEIGHT 132          // 重心距底盘中心高度,单位mm
+// 底盘跟随就近回中参数
+#define CHASSIS_FOLLOW_ALLOW_FLIP 1          // 是否允许车头翻转(0:不允许, 1:允许)
+#define CHASSIS_FOLLOW_FLIP_THRESHOLD 90.0f  // 车头翻转触发阈值(度)
+#define CHASSIS_FOLLOW_MAX_ERR 135.0f        // 最大允许误差(度),避免控制量过大
 // 键盘控制相关参数
 //  键盘按下时的最大目标指令值 (遥控器摇杆最大值为660,
 //  这里可以参考设置或设定的更大)
@@ -179,6 +183,7 @@ typedef struct {
   float vy;           // 横移方向速度
   float wz;           // 旋转速度
   float offset_angle; // 底盘和归中位置的夹角
+  float near_center_error;  // 就近回中误差(考虑翻转优化后,供PID使用)
   chassis_mode_e chassis_mode;
   int chassis_speed_buff;
   // UI部分

@@ -21,7 +21,7 @@
  */
 // #define ONE_BOARD // 单板控制整车
 // #define CHASSIS_BOARD // 底盘板
- #define GIMBAL_BOARD // 云台板
+#define GIMBAL_BOARD // 云台板
 
 #define VISION_USE_VCP // 使用虚拟串口发送视觉数据
 // #define VISION_USE_UART // 使用串口发送视觉数据
@@ -30,20 +30,22 @@
  */
 // 云台参数
 #define YAW_CHASSIS_ALIGN_ECD                                                  \
-  3739 // 云台和底盘对齐指向相同方向时的电机编码器值,若对云台有机械改动需要修改
+  2630 // 云台和底盘对齐指向相同方向时的电机编码器值,若对云台有机械改动需要修改
 #define YAW_ECD_GREATER_THAN_4096                                              \
   0 // ALIGN_ECD值是否大于4096,是为1,否为0;用于计算云台偏转角度
 #define PITCH_HORIZON_ECD                                                      \
-  5569 // 云台处于水平位置时编码器值,若对云台有机械改动需要修改
+  4988 // 云台处于水平位置时编码器值,若对云台有机械改动需要修改
 #define PITCH_MAX_ANGLE                                                        \
   48.5f // 云台竖直方向最大角度 (注意反馈如果是陀螺仪，则填写陀螺仪的角度)
 #define PITCH_MIN_ANGLE                                                        \
   -10.5f // 云台竖直方向最小角度 (注意反馈如果是陀螺仪，则填写陀螺仪的角度)
 // 发射参数
-#define REDUCTION_RATIO_LOADER 19.0f  // M3508拨盘电机的减速比
-#define LOAD_ANGLE_PER_BULLET 60      // 拨盘输出轴每发弹丸转动角度（机械设计值）
-#define ONE_BULLET_DELTA_ANGLE (LOAD_ANGLE_PER_BULLET * REDUCTION_RATIO_LOADER) // 电机轴角度 = 输出轴角度 × 减速比 = 60×19 = 1140°
-#define NUM_PER_CIRCLE 6 // 拨盘一圈的装载量
+#define REDUCTION_RATIO_LOADER 19.0f // M3508拨盘电机的减速比
+#define LOAD_ANGLE_PER_BULLET 60     // 拨盘输出轴每发弹丸转动角度（机械设计值）
+#define ONE_BULLET_DELTA_ANGLE                                                 \
+  (LOAD_ANGLE_PER_BULLET *                                                     \
+   REDUCTION_RATIO_LOADER) // 电机轴角度 = 输出轴角度 × 减速比 = 60×19 = 1140°
+#define NUM_PER_CIRCLE 6   // 拨盘一圈的装载量
 // 机器人底盘修改的参数,单位为mm(毫米)
 #define WHEEL_BASE 560  // 纵向轴距(前进后退方向)
 #define TRACK_WIDTH 330 // 横向轮距(左右平移方向)
@@ -60,9 +62,9 @@
 #define DIST_CG_REAR_AXLE 280  // 重心距后轴距离,单位mm
 #define CG_HEIGHT 132          // 重心距底盘中心高度,单位mm
 // 底盘跟随就近回中参数
-#define CHASSIS_FOLLOW_ALLOW_FLIP 1          // 是否允许车头翻转(0:不允许, 1:允许)
-#define CHASSIS_FOLLOW_FLIP_THRESHOLD 90.0f  // 车头翻转触发阈值(度)
-#define CHASSIS_FOLLOW_MAX_ERR 135.0f        // 最大允许误差(度),避免控制量过大
+#define CHASSIS_FOLLOW_ALLOW_FLIP 1 // 是否允许车头翻转(0:不允许, 1:允许)
+#define CHASSIS_FOLLOW_FLIP_THRESHOLD 90.0f // 车头翻转触发阈值(度)
+#define CHASSIS_FOLLOW_MAX_ERR 135.0f       // 最大允许误差(度),避免控制量过大
 // 键盘控制相关参数
 //  键盘按下时的最大目标指令值 (遥控器摇杆最大值为660,
 //  这里可以参考设置或设定的更大)
@@ -178,11 +180,11 @@ typedef struct { // 功率控制
 // cmd发布的底盘控制数据,由chassis订阅
 typedef struct {
   // 控制部分
-  float vx;           // 前进方向速度
-  float vy;           // 横移方向速度
-  float wz;           // 旋转速度
-  float offset_angle; // 底盘和归中位置的夹角
-  float near_center_error;  // 就近回中误差(考虑翻转优化后,供PID使用)
+  float vx;                // 前进方向速度
+  float vy;                // 横移方向速度
+  float wz;                // 旋转速度
+  float offset_angle;      // 底盘和归中位置的夹角
+  float near_center_error; // 就近回中误差(考虑翻转优化后,供PID使用)
   chassis_mode_e chassis_mode;
   int chassis_speed_buff;
   // UI部分

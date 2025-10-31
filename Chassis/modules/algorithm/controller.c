@@ -207,3 +207,138 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
 
     return pid->Output;
 }
+
+/* ======================== RLS递归最小二乘算法实现 ======================== */
+
+/**
+ * @brief 初始化RLS实例
+ */
+void RLSInit(RLSInstance *rls, RLS_Init_Config_s *config)
+{
+    rls->lambda = config->lambda;
+    rls->delta = config->delta;
+    rls->update_cnt = 0;
+    
+    // 初始化转移矩阵为单位矩阵 * delta
+    rls->trans_matrix[0] = config->delta;  // P[0][0]
+    rls->trans_matrix[1] = 0.0f;           // P[0][1]
+    rls->trans_matrix[2] = 0.0f;           // P[1][0]
+    rls->trans_matrix[3] = config->delta;  // P[1][1]
+    
+    // 初始化增益向量为0
+    rls->gain_vector[0] = 0.0f;
+    rls->gain_vector[1] = 0.0f;
+    
+    // 初始化参数向量
+    rls->params_vector[0] = config->init_k1;
+    rls->params_vector[1] = config->init_k2;
+}
+
+/**
+ * @brief RLS算法更新
+ * @note  实现公式:
+ *        K(k) = P(k-1)*φ(k) / [λ + φ^T(k)*P(k-1)*φ(k)]
+ *        θ(k) = θ(k-1) + K(k) * [y(k) - φ^T(k)*θ(k-1)]
+ *        P(k) = [P(k-1) - K(k)*φ^T(k)*P(k-1)] / λ
+ */
+void RLSUpdate(RLSInstance *rls, float sample_vector[2], float actual_output)
+{
+    float phi[2];  // 采样向量 φ(k)
+    float P_phi[2];  // P(k-1) * φ(k)
+    float phi_T_P_phi;  // φ^T(k) * P(k-1) * φ(k)
+    float phi_T_theta;  // φ^T(k) * θ(k-1)
+    float denominator;  // 分母
+    float K[2];  // 增益向量
+    float error;  // 预测误差
+    float K_phi_T[4];  // K(k) * φ^T(k)
+    float temp_P[4];  // 临时矩阵
+    
+    phi[0] = sample_vector[0];
+    phi[1] = sample_vector[1];
+    
+    // 计算 P(k-1) * φ(k)
+    P_phi[0] = rls->trans_matrix[0] * phi[0] + rls->trans_matrix[1] * phi[1];
+    P_phi[1] = rls->trans_matrix[2] * phi[0] + rls->trans_matrix[3] * phi[1];
+    
+    // 计算 φ^T(k) * P(k-1) * φ(k)
+    phi_T_P_phi = phi[0] * P_phi[0] + phi[1] * P_phi[1];
+    
+    // 计算分母 λ + φ^T(k)*P(k-1)*φ(k)
+    denominator = rls->lambda + phi_T_P_phi / rls->lambda;
+    
+    // 防止除零
+    if (fabsf(denominator) < 1e-10f)
+        return;
+    
+    // 计算增益向量 K(k) = P(k-1)*φ(k) / [λ + φ^T(k)*P(k-1)*φ(k)] / λ
+    K[0] = P_phi[0] / denominator;
+    K[1] = P_phi[1] / denominator;
+    
+    rls->gain_vector[0] = K[0];
+    rls->gain_vector[1] = K[1];
+    
+    // 计算 φ^T(k) * θ(k-1)
+    phi_T_theta = phi[0] * rls->params_vector[0] + phi[1] * rls->params_vector[1];
+    
+    // 计算预测误差
+    error = actual_output - phi_T_theta;
+    
+    // 更新参数向量 θ(k) = θ(k-1) + K(k) * error
+    rls->params_vector[0] += K[0] * error;
+    rls->params_vector[1] += K[1] * error;
+    
+    // 限制参数在合理范围内
+    if (rls->params_vector[0] < 1e-5f) rls->params_vector[0] = 1e-5f;
+    if (rls->params_vector[1] < 1e-5f) rls->params_vector[1] = 1e-5f;
+    if (rls->params_vector[0] > 10.0f) rls->params_vector[0] = 10.0f;
+    if (rls->params_vector[1] > 10.0f) rls->params_vector[1] = 10.0f;
+    
+    // 计算 K(k) * φ^T(k)
+    K_phi_T[0] = K[0] * phi[0];  // K[0] * phi[0]
+    K_phi_T[1] = K[0] * phi[1];  // K[0] * phi[1]
+    K_phi_T[2] = K[1] * phi[0];  // K[1] * phi[0]
+    K_phi_T[3] = K[1] * phi[1];  // K[1] * phi[1]
+    
+    // 计算 P(k) = [P(k-1) - K(k)*φ^T(k)*P(k-1)] / λ
+    temp_P[0] = rls->trans_matrix[0] - K_phi_T[0] * rls->trans_matrix[0] - K_phi_T[1] * rls->trans_matrix[2];
+    temp_P[1] = rls->trans_matrix[1] - K_phi_T[0] * rls->trans_matrix[1] - K_phi_T[1] * rls->trans_matrix[3];
+    temp_P[2] = rls->trans_matrix[2] - K_phi_T[2] * rls->trans_matrix[0] - K_phi_T[3] * rls->trans_matrix[2];
+    temp_P[3] = rls->trans_matrix[3] - K_phi_T[2] * rls->trans_matrix[1] - K_phi_T[3] * rls->trans_matrix[3];
+    
+    rls->trans_matrix[0] = temp_P[0] / rls->lambda;
+    rls->trans_matrix[1] = temp_P[1] / rls->lambda;
+    rls->trans_matrix[2] = temp_P[2] / rls->lambda;
+    rls->trans_matrix[3] = temp_P[3] / rls->lambda;
+    
+    rls->update_cnt++;
+}
+
+/**
+ * @brief 重置RLS算法
+ */
+void RLSReset(RLSInstance *rls)
+{
+    // 重置转移矩阵为单位矩阵 * delta
+    rls->trans_matrix[0] = rls->delta;
+    rls->trans_matrix[1] = 0.0f;
+    rls->trans_matrix[2] = 0.0f;
+    rls->trans_matrix[3] = rls->delta;
+    
+    // 重置增益向量
+    rls->gain_vector[0] = 0.0f;
+    rls->gain_vector[1] = 0.0f;
+    
+    // 参数向量保持不变，不重置
+    rls->update_cnt = 0;
+}
+
+/**
+ * @brief 获取当前识别的参数
+ */
+void RLSGetParams(RLSInstance *rls, float *k1, float *k2)
+{
+    if (k1 != NULL)
+        *k1 = rls->params_vector[0];
+    if (k2 != NULL)
+        *k2 = rls->params_vector[1];
+}

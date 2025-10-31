@@ -142,6 +142,62 @@ void RobotCMDInit() {
  *        单圈绝对角度的范围是0~360,说明文档中有图示
  *
  */
+/**
+ * @brief 就近回中误差计算,支持车头翻转
+ *        根据当前offset_angle和翻转状态,计算最优控制误差和微分项
+ *        计算结果存储在chassis_cmd_send的near_center_error中
+ * 
+ * @param offset_angle 云台相对底盘的偏差角度(-180~180度)
+ */
+/**
+ * @brief 角度归一化到[-180, 180]区间,使用arm_math优化
+ * @param angle 输入角度
+ * @return float 归一化后的角度
+ */
+static inline float NormalizeAngle(float angle) {
+  // 使用fmodf进行模运算,比if-else更高效
+  angle = fmodf(angle + 180.0f, 360.0f);
+  if (angle < 0.0f) {
+    angle += 360.0f;
+  }
+  return angle - 180.0f;
+}
+
+static void CalcNearCenterError(float offset_angle) {
+  static uint8_t flip_state = 0;  // 车头翻转状态: 0-正向, 1-反向(180度)
+  float target_angle = 0.0f;  // 目标角度
+  float error = 0.0f;
+  float abs_error = 0.0f;  // 误差绝对值
+  
+#if CHASSIS_FOLLOW_ALLOW_FLIP
+  // 根据翻转状态确定目标角度
+  target_angle = flip_state ? 180.0f : 0.0f;
+  
+  // 计算误差并归一化到[-180, 180],使用优化的归一化函数
+  error = NormalizeAngle(offset_angle - target_angle);
+  
+  // 使用arm_math库的绝对值函数(内联优化)
+  abs_error = fabsf(error);
+  
+  // 翻转状态切换逻辑:当误差超过阈值时考虑翻转
+  if (abs_error > CHASSIS_FOLLOW_FLIP_THRESHOLD) {
+    flip_state = !flip_state;  // 切换翻转状态
+    // 重新计算误差
+    target_angle = flip_state ? 180.0f : 0.0f;
+    error = NormalizeAngle(offset_angle - target_angle);
+  }
+#else
+  // 不允许翻转,直接使用offset_angle作为误差
+  error = offset_angle;
+#endif
+  
+  // 误差限幅,使用arm_math的float_constrain功能
+  error = float_constrain(error, -CHASSIS_FOLLOW_MAX_ERR, CHASSIS_FOLLOW_MAX_ERR);
+  
+  // 存储就近回中误差,供底盘PID控制器使用
+  chassis_cmd_send.near_center_error = error;
+}
+
 static void CalcOffsetAngle() {
   // 别名angle提高可读性,不然太长了不好看,虽然基本不会动这个函数
   static float angle;
@@ -387,7 +443,9 @@ void RobotCMDTask() {
 
   // 根据gimbal的反馈值计算云台和底盘正方向的夹角,不需要传参,通过static私有变量完成
   CalcOffsetAngle();
-  // 遥控器控制
+  // 计算就近回中误差(支持车头翻转优化)
+  (chassis_cmd_send.offset_angle);
+  // 遥控器控制CalcNearCenterError
   RemoteControlSet();
   EmergencyHandler(); // 处理模块离线和遥控器急停等紧急情况
 

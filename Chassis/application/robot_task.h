@@ -15,6 +15,7 @@
 #include "referee_task.h"
 #include "robot.h"
 #include "sysid_task.h"
+#include "power_controller.h"  // 新增：功率控制模块
 
 #include "bsp_log.h"
 
@@ -25,12 +26,20 @@ osThreadId daemonTaskHandle;
 osThreadId uiTaskHandle;
 osThreadId sysidTaskHandle;
 
+#if POWER_CONTROLLER_ENABLE
+osThreadId powerTaskHandle;    // 新增：功率控制任务句柄
+#endif
+
 void StartINSTASK(void const *argument);
 void StartMOTORTASK(void const *argument);
 void StartDAEMONTASK(void const *argument);
 void StartROBOTTASK(void const *argument);
 void StartUITASK(void const *argument);
 void StartSYSIDTASK(void const *argument);
+
+#if POWER_CONTROLLER_ENABLE
+void StartPOWERTASK(void const *argument);  // 新增：功率控制任务
+#endif
 
 /**
  * @brief 初始化机器人任务,所有持续运行的任务都在这里初始化
@@ -57,6 +66,13 @@ void OSTaskInit() {
 
   osThreadDef(sysidtask, StartSYSIDTASK, osPriorityAboveNormal, 0, 512);
   sysidTaskHandle = osThreadCreate(osThread(sysidtask), NULL);
+
+#if POWER_CONTROLLER_ENABLE
+  // 功率控制任务：优先级设置为Normal，略低于Robot任务，周期2ms (500Hz)
+  // 仅在POWER_CONTROLLER_ENABLE=1时创建
+  osThreadDef(powertask, StartPOWERTASK, osPriorityNormal, 0, 256);
+  powerTaskHandle = osThreadCreate(osThread(powertask), NULL);
+#endif
 
   HTMotorControlInit(); // 没有注册HT电机则不会执行
 }
@@ -154,3 +170,32 @@ __attribute__((noreturn)) void StartSYSIDTASK(void const *argument) {
     osDelay(1);
   }
 }
+
+#if POWER_CONTROLLER_ENABLE
+/**
+ * @brief 功率控制任务
+ * @note 独立任务，负责RLS参数辨识和能量环控制
+ *       优先级略低于Robot任务，周期2ms (500Hz)
+ *       仅在POWER_CONTROLLER_ENABLE=1时编译
+ */
+__attribute__((noreturn)) void StartPOWERTASK(void const *argument) {
+  static float power_start;
+  static float power_dt;
+  LOGINFO("[freeRTOS] Power Controller Task Start");
+
+  // 等待底盘初始化完成
+  osDelay(100);
+
+  for (;;) {
+    // 500Hz: 2ms周期
+    power_start = DWT_GetTimeline_ms();
+    PowerControllerTask();  // RLS更新 + 能量环控制
+    power_dt = DWT_GetTimeline_ms() - power_start;
+    
+    if (power_dt > 2)
+      LOGERROR("[freeRTOS] POWER Task is being DELAY! dt = [%f]", &power_dt);
+    
+    osDelay(2);
+  }
+}
+#endif
