@@ -11,11 +11,6 @@
 #include "user_lib.h"
 #include <math.h>
 
-/* ==================== 调参比例宏 ==================== */
-// 可通过修改以下比例对Yaw轴PID进行等比例放大/缩小
-#define YAW_ANGLE_PID_SCALE 50.0f // 角度环缩放系数（例如 10.0f 放大十倍）
-#define YAW_SPEED_PID_SCALE 50.0f // 速度环缩放系数（例如 1e7 放大一千万倍）
-
 /* ==================== 系统辨识任务交互 ==================== */
 // 系统辨识任务通过消息中心与云台任务交互
 static Publisher_t *sysid_pub;  // 系统辨识数据发布者
@@ -124,9 +119,9 @@ void GimbalInit() {
                       .Kp = 52.5f,                // 大幅降低，消除抖动
                       .Ki = 10.5f,                // 暂时关闭积分，避免振荡
                       .Kd = 0.0f,                 // 先关闭微分，等稳定后再加
-                      .Derivative_LPF_RC = 0.95f, // 增强滤波（虽然Kd=0）
+                      .Derivative_LPF_RC = 0.05f, // 增强滤波（虽然Kd=0）
                       .Improve = PID_Integral_Limit | PID_DerivativeFilter,
-                      .IntegralLimit = 350,
+                      .IntegralLimit = 500,
                       .MaxOut = 20000, // 降低输出限制
                   },
               .other_angle_feedback_ptr = &gimba_IMU_data->Pitch,
@@ -247,7 +242,6 @@ void GimbalTask() {
   }
   // 设置反馈数据,主要是imu和yaw的ecd
   gimbal_feedback_data.gimbal_imu_data = *gimba_IMU_data;
-
   gimbal_feedback_data.yaw_motor_single_round_angle =
       yaw_motor->measure.angle_single_round;
   // 推送消息

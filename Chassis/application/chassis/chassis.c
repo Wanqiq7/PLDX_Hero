@@ -1,30 +1,16 @@
-/**
- * @file chassis.c
- * @author NeoZeng neozng1@hnu.edu.cn
- * @brief 底盘应用,负责接收robot_cmd的控制命令并根据命令进行运动学解算,得到输出
- *        注意底盘采取右手系,对于平面视图,底盘纵向运动的正前方为x正方向;横向运动的右侧为y正方向
- *
- * @version 0.1
- * @date 2022-12-04
- *
- * @copyright Copyright (c) 2022
- *
- */
-
 #include "chassis.h"
+#include "arm_math.h"
+#include "bsp_dwt.h"
 #include "controller.h"
 #include "dji_motor.h"
+#include "general_def.h"
 #include "message_center.h"
+#include "power_controller.h"
+#include "referee_UI.h"
 #include "referee_task.h"
 #include "robot_def.h"
 #include "super_cap.h"
 #include "user_lib.h"
-#include "power_controller.h"  // 新增：独立的功率控制模块
-
-#include "arm_math.h"
-#include "bsp_dwt.h"
-#include "general_def.h"
-#include "referee_UI.h"
 
 /* 根据robot_def.h中的macro自动计算的参数 */
 #define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)     // 半轴距
@@ -107,8 +93,9 @@ void ChassisInit() {
                       .Derivative_LPF_RC = 0.06f,
                       .IntegralLimit = 0.0f, // 无积分项，设为0
                       .Improve =
-                          PID_DerivativeFilter, // 关闭所有改进特性，纯P控制
-                      .MaxOut = 20000,          // 保持较大的输出限制
+                          PID_DerivativeFilter |
+                          PID_Derivative_On_Measurement, // 关闭所有改进特性，纯P控制
+                      .MaxOut = 20000,                   // 保持较大的输出限制
                   },
               .current_PID =
                   {
@@ -190,12 +177,12 @@ void ChassisInit() {
 
   // 功率控制器初始化（独立模块）
   PowerControllerConfig_t power_config = {
-      .k1_init = 0.22f,              // 转速损耗系数初始值
-      .k2_init = 1.2f,               // 力矩损耗系数初始值
-      .k3 = 2.78f,                   // 静态功率损耗
-      .rls_lambda = 0.9999f,         // RLS遗忘因子
-      .torque_constant = 0.3f,       // M3508电机转矩常数 (Nm/A)
-      .current_scale = 20.0f / 16384.0f,  // CAN指令值转电流系数
+      .k1_init = 0.22f,                  // 转速损耗系数初始值
+      .k2_init = 1.2f,                   // 力矩损耗系数初始值
+      .k3 = 2.78f,                       // 静态功率损耗
+      .rls_lambda = 0.9999f,             // RLS遗忘因子
+      .torque_constant = 0.3f,           // M3508电机转矩常数 (Nm/A)
+      .current_scale = 20.0f / 16384.0f, // CAN指令值转电流系数
   };
   PowerControllerInit(&power_config);
 
@@ -280,7 +267,7 @@ static void SlopeCompensation() {
 
   // 5. 避免除零错误和增加坡度死区
   if (actual_total_normal_force < 1e-3f ||
-      fabsf(Chassis_IMU_data->Pitch) < 5.0f) {
+      fabsf(Chassis_IMU_data->Pitch) < 2.5f) {
     return;
   }
 
@@ -467,8 +454,8 @@ void ChassisTask() {
     // PID控制: 期望值为0(对齐),反馈值为near_center_error(就近回位误差)
     // 输出为底盘旋转角速度,负号是因为角度偏差和底盘旋转方向相反
     // 注意: 使用near_center_error而非offset_angle,支持车头翻转优化(就近回位)
-    float pid_output =
-        -PIDCalculate(&chassis_follow_pid, chassis_cmd_recv.near_center_error, 0.0f);
+    float pid_output = -PIDCalculate(&chassis_follow_pid,
+                                     chassis_cmd_recv.near_center_error, 0.0f);
 
     // 使用一阶低通滤波器平滑过渡
     // K值说明：K越小滤波越强(保持原有运动状态更多)，K越大响应越快
@@ -503,9 +490,6 @@ void ChassisTask() {
   // 1. 根据控制模式进行正运动学解算,计算底盘输出
   MecanumCalculate();
 
-  // 1.5. 添加速度指令死区，防止零速抖动
-  // ApplyChassisSpeedDeadband(SPEED_DEADBAND_THRESHOLD);
-
   // 2. 清零当周期电流前馈
   // ClearFeedforward();
 
@@ -537,15 +521,19 @@ void ChassisTask() {
       motor_lb->measure.speed_aps * DEGREE_2_RAD,
       motor_rb->measure.speed_aps * DEGREE_2_RAD,
   };
-  
+
   // 估算电机转矩（通过PID输出转换）
-  const float TORQUE_CONSTANT = 0.3f;              // Nm/A
-  const float CURRENT_SCALE = 20.0f / 16384.0f;    // CAN指令值转电流
+  const float TORQUE_CONSTANT = 0.3f;           // Nm/A
+  const float CURRENT_SCALE = 20.0f / 16384.0f; // CAN指令值转电流
   float motor_torques[4] = {
-      motor_lf->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
-      motor_rf->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
-      motor_lb->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
-      motor_rb->motor_controller.speed_PID.Output * CURRENT_SCALE * TORQUE_CONSTANT,
+      motor_lf->motor_controller.speed_PID.Output * CURRENT_SCALE *
+          TORQUE_CONSTANT,
+      motor_rf->motor_controller.speed_PID.Output * CURRENT_SCALE *
+          TORQUE_CONSTANT,
+      motor_lb->motor_controller.speed_PID.Output * CURRENT_SCALE *
+          TORQUE_CONSTANT,
+      motor_rb->motor_controller.speed_PID.Output * CURRENT_SCALE *
+          TORQUE_CONSTANT,
   };
   PowerUpdateMotorFeedback(motor_speeds, motor_torques);
 #endif
