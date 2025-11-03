@@ -24,11 +24,13 @@
   (PITCH_HORIZON_ECD * ECD_ANGLE_COEF_DJI) // pitch水平时电机的角度,0-360
 
 // Pitch轴角度限位保护宏
-#define LIMIT_PITCH_ANGLE(angle) \
-    do { \
-        if ((angle) > PITCH_MAX_ANGLE) (angle) = PITCH_MAX_ANGLE; \
-        if ((angle) < PITCH_MIN_ANGLE) (angle) = PITCH_MIN_ANGLE; \
-    } while(0)
+#define LIMIT_PITCH_ANGLE(angle)                                               \
+  do {                                                                         \
+    if ((angle) > PITCH_MAX_ANGLE)                                             \
+      (angle) = PITCH_MAX_ANGLE;                                               \
+    if ((angle) < PITCH_MIN_ANGLE)                                             \
+      (angle) = PITCH_MIN_ANGLE;                                               \
+  } while (0)
 
 /* cmd应用包含的模块实例指针和交互信息存储*/
 #ifdef GIMBAL_BOARD // 对双板的兼容,条件编译
@@ -135,7 +137,7 @@ void RobotCMDInit() {
   cmd_can_comm = CANCommInit(&comm_conf);
 #endif // GIMBAL_BOARD
   gimbal_cmd_send.pitch = 0;
-  
+
   // ⭐ 初始化发射模块控制指令
   shoot_cmd_send.shoot_mode = SHOOT_ON;        // 发射模块使能
   shoot_cmd_send.friction_mode = FRICTION_OFF; // 摩擦轮默认关闭
@@ -148,51 +150,25 @@ void RobotCMDInit() {
       ROBOT_READY; // 启动时机器人进入工作模式,后续加入所有应用初始化完成之后再进入
 }
 
-/**
- * @brief 根据gimbal app传回的当前电机角度计算和零位的误差
- *        单圈绝对角度的范围是0~360,说明文档中有图示
- *
- */
-/**
- * @brief 就近回中误差计算,支持车头翻转
- *        根据当前offset_angle和翻转状态,计算最优控制误差和微分项
- *        计算结果存储在chassis_cmd_send的near_center_error和near_center_error_diff中
- * 
- * @param offset_angle 云台相对底盘的偏差角度(-180~180度)
- */
-/**
- * @brief 角度归一化到[-180, 180]区间,使用arm_math优化
- * @param angle 输入角度
- * @return float 归一化后的角度
- */
-static inline float NormalizeAngle(float angle) {
-  // 使用fmodf进行模运算,比if-else更高效
-  angle = fmodf(angle + 180.0f, 360.0f);
-  if (angle < 0.0f) {
-    angle += 360.0f;
-  }
-  return angle - 180.0f;
-}
-
 static void CalcNearCenterError(float offset_angle) {
-  static uint8_t flip_state = 0;  // 车头翻转状态: 0-正向, 1-反向(180度)
-  float target_angle = 0.0f;  // 目标角度
+  static uint8_t flip_state = 0; // 车头翻转状态: 0-正向, 1-反向(180度)
+  float target_angle = 0.0f;     // 目标角度
   float error = 0.0f;
-  float abs_error = 0.0f;  // 误差绝对值
-  
+  float abs_error = 0.0f; // 误差绝对值
+
 #if CHASSIS_FOLLOW_ALLOW_FLIP
   // 根据翻转状态确定目标角度
   target_angle = flip_state ? 180.0f : 0.0f;
-  
+
   // 计算误差并归一化到[-180, 180],使用优化的归一化函数
   error = NormalizeAngle(offset_angle - target_angle);
-  
+
   // 使用arm_math库的绝对值函数(内联优化)
   abs_error = fabsf(error);
-  
+
   // 翻转状态切换逻辑:当误差超过阈值时考虑翻转
   if (abs_error > CHASSIS_FOLLOW_FLIP_THRESHOLD) {
-    flip_state = !flip_state;  // 切换翻转状态
+    flip_state = !flip_state; // 切换翻转状态
     // 重新计算误差
     target_angle = flip_state ? 180.0f : 0.0f;
     error = NormalizeAngle(offset_angle - target_angle);
@@ -201,10 +177,11 @@ static void CalcNearCenterError(float offset_angle) {
   // 不允许翻转,直接使用offset_angle作为误差
   error = offset_angle;
 #endif
-  
+
   // 误差限幅,使用arm_math的float_constrain功能
-  error = float_constrain(error, -CHASSIS_FOLLOW_MAX_ERR, CHASSIS_FOLLOW_MAX_ERR);
-  
+  error =
+      float_constrain(error, -CHASSIS_FOLLOW_MAX_ERR, CHASSIS_FOLLOW_MAX_ERR);
+
   // 存储就近回中误差,供底盘PID控制器使用
   chassis_cmd_send.near_center_error = error;
 }
@@ -259,46 +236,44 @@ static void RemoteControlSet() {
   chassis_cmd_send.vy = 41.3f * (float)rc_data[TEMP].rc.rocker_l1;
 
   // 云台改为右摇杆，添加低通滤波
-  static float yaw_increment_filtered = 0.0f;    // 保存上一次的滤波输出
-  static float pitch_increment_filtered = 0.0f;   // 保存上一次的滤波输出
-  
+  static float yaw_increment_filtered = 0.0f;   // 保存上一次的滤波输出
+  static float pitch_increment_filtered = 0.0f; // 保存上一次的滤波输出
+
   // 计算原始增量
   float yaw_increment = 0.001f * (float)rc_data[TEMP].rc.rocker_r_;
   float pitch_increment = 0.0005f * (float)rc_data[TEMP].rc.rocker_r1;
-  
+
   // 低通滤波，K=0.15对应约5Hz截止频率（在200Hz采样下）
-  yaw_increment = LowPassFilter_Float(yaw_increment, 0.95f, &yaw_increment_filtered);
-  pitch_increment = LowPassFilter_Float(pitch_increment, 0.95f, &pitch_increment_filtered);
-  
+  yaw_increment =
+      LowPassFilter_Float(yaw_increment, 0.95f, &yaw_increment_filtered);
+  pitch_increment =
+      LowPassFilter_Float(pitch_increment, 0.95f, &pitch_increment_filtered);
+
   // 更新目标角度
   gimbal_cmd_send.yaw += yaw_increment;
   gimbal_cmd_send.pitch += pitch_increment;
-  LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch);  // 添加pitch角度限位保护
+  LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch); // 添加pitch角度限位保护
 
   // 发射参数
   // 右侧开关控制发射机构 - 三档互斥逻辑
   // [下档]: 不操作发射机构（摩擦轮停止，拨盘停止）
   // [中档]: 只转动摩擦轮（摩擦轮开启，拨盘停止）
   // [上档]: 摩擦轮转动 + 拨弹连发（摩擦轮开启，拨盘连发）
-  if (switch_is_down(rc_data[TEMP].rc.switch_right))
-  {
+  if (switch_is_down(rc_data[TEMP].rc.switch_right)) {
     // 下档：全部停止
     shoot_cmd_send.friction_mode = FRICTION_OFF;
     shoot_cmd_send.load_mode = LOAD_STOP;
-  }
-  else if (switch_is_mid(rc_data[TEMP].rc.switch_right))
-  {
+  } else if (switch_is_mid(rc_data[TEMP].rc.switch_right)) {
     // 中档：仅摩擦轮转动
     shoot_cmd_send.friction_mode = FRICTION_ON;
     shoot_cmd_send.load_mode = LOAD_STOP;
-  }
-  else if (switch_is_up(rc_data[TEMP].rc.switch_right))
-  {
+  } else if (switch_is_up(rc_data[TEMP].rc.switch_right)) {
     // 上档：摩擦轮转动 + 单发模式（英雄机器人标准配置）
     shoot_cmd_send.friction_mode = FRICTION_ON;
-    shoot_cmd_send.load_mode = LOAD_1_BULLET;   // ✅ 单发模式：使用angle_PID精确控制位置
-    shoot_cmd_send.shoot_rate = 1.0f;           // 1Hz射频（每秒1发，不应期1000ms）
-    
+    shoot_cmd_send.load_mode =
+        LOAD_1_BULLET;                // ✅ 单发模式：使用angle_PID精确控制位置
+    shoot_cmd_send.shoot_rate = 1.0f; // 1Hz射频（每秒1发，不应期1000ms）
+
     // 如果需要连发测试速度环，改为：
     // shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
   }
@@ -328,7 +303,7 @@ static void MouseKeySet() {
 
   gimbal_cmd_send.yaw += (float)rc_data[TEMP].mouse.x / 660 * 10; // 系数待测
   gimbal_cmd_send.pitch += (float)rc_data[TEMP].mouse.y / 660 * 10;
-  LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch);  // 添加pitch角度限位保护
+  LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch); // 添加pitch角度限位保护
 
   switch (rc_data[TEMP].key_count[KEY_PRESS][Key_Z] % 3) // Z键设置弹速
   {
