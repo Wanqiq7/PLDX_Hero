@@ -135,8 +135,9 @@ void RobotCMDInit() {
       .send_data_len = sizeof(Chassis_Ctrl_Cmd_s),
   };
   cmd_can_comm = CANCommInit(&comm_conf);
-#endif // GIMBAL_BOARD
-  gimbal_cmd_send.pitch = 0;
+#endif                          // GIMBAL_BOARD
+  gimbal_cmd_send.yaw = 0.0f;   // Yaw初始化为0弧度
+  gimbal_cmd_send.pitch = 0.0f; // Pitch初始化为0度
 
   // ⭐ 初始化发射模块控制指令
   shoot_cmd_send.shoot_mode = SHOOT_ON;        // 发射模块使能
@@ -161,7 +162,7 @@ static void CalcNearCenterError(float offset_angle) {
   target_angle = flip_state ? 180.0f : 0.0f;
 
   // 计算误差并归一化到[-180, 180],使用优化的归一化函数
-  error = NormalizeAngle(offset_angle - target_angle);
+  error = theta_format(offset_angle - target_angle);
 
   // 使用arm_math库的绝对值函数(内联优化)
   abs_error = fabsf(error);
@@ -171,7 +172,7 @@ static void CalcNearCenterError(float offset_angle) {
     flip_state = !flip_state; // 切换翻转状态
     // 重新计算误差
     target_angle = flip_state ? 180.0f : 0.0f;
-    error = NormalizeAngle(offset_angle - target_angle);
+    error = theta_format(offset_angle - target_angle);
   }
 #else
   // 不允许翻转,直接使用offset_angle作为误差
@@ -240,7 +241,10 @@ static void RemoteControlSet() {
   static float pitch_increment_filtered = 0.0f; // 保存上一次的滤波输出
 
   // 计算原始增量
-  float yaw_increment = 0.001f * (float)rc_data[TEMP].rc.rocker_r_;
+  // Yaw: 角度增量 → 弧度增量（LQR需要弧度制）
+  float yaw_increment =
+      0.001f * (float)rc_data[TEMP].rc.rocker_r_ * PI / 180.0f;
+  // Pitch: 保持角度制
   float pitch_increment = 0.0005f * (float)rc_data[TEMP].rc.rocker_r1;
 
   // 低通滤波，K=0.15对应约5Hz截止频率（在200Hz采样下）
@@ -250,8 +254,8 @@ static void RemoteControlSet() {
       LowPassFilter_Float(pitch_increment, 0.95f, &pitch_increment_filtered);
 
   // 更新目标角度
-  gimbal_cmd_send.yaw += yaw_increment;
-  gimbal_cmd_send.pitch += pitch_increment;
+  gimbal_cmd_send.yaw += yaw_increment;     // Yaw: 弧度制
+  gimbal_cmd_send.pitch += pitch_increment; // Pitch: 角度制
   LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch); // 添加pitch角度限位保护
 
   // 发射参数
@@ -301,7 +305,9 @@ static void MouseKeySet() {
   chassis_cmd_send.vx = keyboard_vx_cmd_planned;
   chassis_cmd_send.vy = keyboard_vy_cmd_planned;
 
-  gimbal_cmd_send.yaw += (float)rc_data[TEMP].mouse.x / 660 * 10; // 系数待测
+  // Yaw: 角度 → 弧度（LQR需要弧度制）
+  gimbal_cmd_send.yaw += (float)rc_data[TEMP].mouse.x / 660 * 10 * PI / 180.0f;
+  // Pitch: 保持角度制
   gimbal_cmd_send.pitch += (float)rc_data[TEMP].mouse.y / 660 * 10;
   LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch); // 添加pitch角度限位保护
 

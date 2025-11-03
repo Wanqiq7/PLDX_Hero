@@ -2,6 +2,7 @@
 #include "arm_math.h"
 #include "bmi088.h"
 #include "bsp_dwt.h"
+#include "controller.h" // 包含LQR控制器
 #include "dji_motor.h"
 #include "general_def.h"
 #include "ins_task.h"
@@ -23,6 +24,8 @@ static DJIMotorInstance *yaw_motor, *pitch_motor;
 // 云台前馈变量：电流/力矩前馈（指针在初始化中绑定到电机控制器）
 static float gimbal_yaw_cur_ff = 0.0f;
 static float gimbal_pitch_cur_ff = 600.0f; // Pitch轴前馈固定值
+
+// 注：不再需要单位转换变量，IMU已经直接输出弧度制数据
 
 /* ==================== 系统辨识相关函数已移至独立任务 ==================== */
 // 系统辨识功能现在由独立的 StartSYSIDTASK 任务执行，见 robot_task.h
@@ -74,9 +77,22 @@ void GimbalInit() {
                           3000,        // 旧代码I限幅±9999，按比例折算约3000
                       .MaxOut = 20000, // GM6020最大电压指令范围，保持充足裕度
                   },
-              .other_angle_feedback_ptr = &gimba_IMU_data->YawTotalAngle,
+              .LQR =
+                  {
+                      // LQR控制器参数（从MATLAB离线计算）
+                      .K_angle = 95.742711f,    // 角度反馈增益 [A/rad]
+                      .K_velocity = 10.653076f, // 角速度反馈增益 [A·s/rad]
+                      .K_integral = 0.0f,   // 积分增益（Yaw轴一般不需要积分）
+                      .max_out = 20.0f,     // 最大电流限制 [A]
+                      .enable_integral = 0, // 禁用积分
+                      .integral_limit = 0.0f,
+                      .integral_deadband = 0.0f,
+                      .integral_decay_coef = 0.0f,
+                  },
+              .other_angle_feedback_ptr =
+                  &gimba_IMU_data->YawTotalAngle_rad, // 直接使用弧度制
               // 还需要增加角速度额外反馈指针,注意方向,ins_task.md中有c板的bodyframe坐标系说明
-              .other_speed_feedback_ptr = &gimba_IMU_data->Gyro[2],
+              .other_speed_feedback_ptr = &gimba_IMU_data->Gyro[2], // rad/s
               .current_feedforward_ptr =
                   &gimbal_yaw_cur_ff, // 开启后可用于一般重力/扰动补偿
           },
@@ -89,6 +105,7 @@ void GimbalInit() {
                   SPEED_LOOP | ANGLE_LOOP,             // 同时开启角度环和速度环
               .feedforward_flag = CURRENT_FEEDFORWARD, // 使能电流前馈通道
               .motor_reverse_flag = MOTOR_DIRECTION_REVERSE,
+              .controller_type = CONTROLLER_LQR, // 默认使用LQR控制器
           },
       .motor_type = GM6020};
   // PITCH - 位置控制配置（角度环+速度环串级）
@@ -126,7 +143,7 @@ void GimbalInit() {
                   },
               .other_angle_feedback_ptr = &gimba_IMU_data->Pitch,
               // 还需要增加角速度额外反馈指针,注意方向,ins_task.md中有c板的bodyframe坐标系说明
-              .other_speed_feedback_ptr = (&gimba_IMU_data->Gyro[0]),
+              .other_speed_feedback_ptr = (&gimba_IMU_data->Gyro[0]), // rad/s
               .current_feedforward_ptr =
                   &gimbal_pitch_cur_ff, // Pitch轴重力补偿注入点
           },
@@ -139,6 +156,7 @@ void GimbalInit() {
                   SPEED_LOOP | ANGLE_LOOP,          // 同时开启角度环和速度环
               .feedforward_flag = FEEDFORWARD_NONE, // 使能电流前馈通道
               .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,
+              .controller_type = CONTROLLER_PID, // 默认使用PID控制器
           },
       .motor_type = M3508,
   };
@@ -156,6 +174,32 @@ void GimbalInit() {
 
   // 初始化系统辨识任务（传递电机和IMU指针）
   SysIDTaskInit(yaw_motor, pitch_motor, gimba_IMU_data);
+
+  /* ==================== LQR使用说明 ==================== */
+  /* LQR控制器已集成到电机库中，使用非常简单：
+   *
+   * 1. LQR参数配置：
+   *    - 在上方yaw_config.controller_param_init_config.LQR中配置
+   *    - 参数通过系统辨识获取，默认值基于Mas2025参考设计
+   *
+   * 2. 系统辨识流程（获取LQR参数）：
+   *    a) 设置 gimbal_mode = GIMBAL_SYS_ID_CHIRP
+   *    b) 在Ozone中导出sysid_data数据为CSV
+   *    c) 运行 LQR_MATLAB_Design.m 脚本进行系统辨识和LQR设计
+   *    d) 将得到的K_angle和K_velocity填入初始化配置
+   *
+   * 3. 使用LQR控制（在GIMBAL_LQR_MODE中）：
+   *    DJIMotorChangeController(yaw_motor, CONTROLLER_LQR);  // 切换到LQR
+   *    DJIMotorSetRef(yaw_motor, target_angle);               // 设置目标
+   *
+   * 4. 切换回PID控制：
+   *    DJIMotorChangeController(yaw_motor, CONTROLLER_PID);  // 切换回PID
+   *
+   * 5. 调试建议：
+   *    - 在Ozone中监控 yaw_motor->motor_controller.LQR 的各个成员
+   *    - 先用小角度测试（±5°），确认方向正确
+   *    - 观察 motor_controller.output 电流是否在合理范围（<20A）
+   */
 }
 
 /* 机器人云台控制核心任务,后续考虑只保留IMU控制,不再需要电机的反馈 */
@@ -163,6 +207,8 @@ void GimbalTask() {
   // 获取云台控制数据
   // 后续增加没收到数据的处理
   SubGetMessage(gimbal_sub, &gimbal_cmd_recv);
+
+  // 注：IMU已直接输出弧度制数据（YawTotalAngle_rad, Pitch_rad），无需转换
 
   // @todo:现在已经不再需要电机反馈,实际上可以始终使用IMU的姿态数据来作为云台的反馈,yaw电机的offset只是用来跟随底盘
   // 根据控制模式进行电机反馈切换和过零,视觉模式在robot_cmd模块就已经设置好,gimbal只看yaw_ref和pitch_ref
@@ -210,6 +256,28 @@ void GimbalTask() {
     static SysID_Ctrl_Cmd_s sysid_stop_cmd3;
     sysid_stop_cmd3.enable = 0;
     PubPushMessage(sysid_pub, &sysid_stop_cmd3);
+    break;
+  }
+
+  // 云台LQR控制模式（Yaw轴LQR，Pitch轴PID）
+  case GIMBAL_LQR_MODE: {
+    // 确保系统辨识任务停止
+    static SysID_Ctrl_Cmd_s sysid_stop_cmd_lqr;
+    sysid_stop_cmd_lqr.enable = 0;
+    PubPushMessage(sysid_pub, &sysid_stop_cmd_lqr);
+
+    // ===== Yaw轴：使用LQR控制（现在只需3行！）=====
+    DJIMotorEnable(yaw_motor);
+    DJIMotorChangeController(yaw_motor, CONTROLLER_LQR); // 切换到LQR控制器
+    DJIMotorSetRef(yaw_motor, gimbal_cmd_recv.yaw);      // 设置目标角度
+
+    // ===== Pitch轴：使用原有PID控制 =====
+    DJIMotorEnable(pitch_motor);
+    DJIMotorChangeController(pitch_motor, CONTROLLER_PID); // 确保使用PID控制器
+    DJIMotorChangeFeed(pitch_motor, ANGLE_LOOP, OTHER_FEED);
+    DJIMotorChangeFeed(pitch_motor, SPEED_LOOP, OTHER_FEED);
+    DJIMotorSetRef(pitch_motor, gimbal_cmd_recv.pitch);
+
     break;
   }
 
