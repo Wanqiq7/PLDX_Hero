@@ -12,10 +12,10 @@
 #include "ins_task.h"
 #include "master_process.h"
 #include "motor_task.h"
+#include "power_controller.h" // 新增：功率控制模块
 #include "referee_task.h"
 #include "robot.h"
 #include "sysid_task.h"
-#include "power_controller.h"  // 新增：功率控制模块
 
 #include "bsp_log.h"
 
@@ -27,7 +27,7 @@ osThreadId uiTaskHandle;
 osThreadId sysidTaskHandle;
 
 #if POWER_CONTROLLER_ENABLE
-osThreadId powerTaskHandle;    // 新增：功率控制任务句柄
+osThreadId powerTaskHandle; // 新增：功率控制任务句柄
 #endif
 
 void StartINSTASK(void const *argument);
@@ -38,7 +38,7 @@ void StartUITASK(void const *argument);
 void StartSYSIDTASK(void const *argument);
 
 #if POWER_CONTROLLER_ENABLE
-void StartPOWERTASK(void const *argument);  // 新增：功率控制任务
+void StartPOWERTASK(void const *argument); // 新增：功率控制任务
 #endif
 
 /**
@@ -155,18 +155,19 @@ __attribute__((noreturn)) void StartUITASK(void const *argument) {
 __attribute__((noreturn)) void StartSYSIDTASK(void const *argument) {
   static float sysid_start;
   static float sysid_dt;
-  LOGINFO("[freeRTOS] System Identification Task Start");
+  LOGINFO("[freeRTOS] Chassis System Identification Task Start");
 
-  // 系统辨识任务初始化在GimbalInit()中完成，这里等待初始化完成
-  osDelay(100); // 等待云台初始化完成
+  // 系统辨识任务初始化在ChassisInit()中完成，这里等待初始化完成
+  osDelay(100); // 等待底盘初始化完成
 
   for (;;) {
     // 1kHz 精确循环
     sysid_start = DWT_GetTimeline_ms();
-    SysIDTask();
+    Chassis_SysIDTask(); // 调用底盘系统辨识任务
     sysid_dt = DWT_GetTimeline_ms() - sysid_start;
     if (sysid_dt > 1)
-      LOGERROR("[freeRTOS] SYSID Task is being DELAY! dt = [%f]", &sysid_dt);
+      LOGERROR("[freeRTOS] CHASSIS SYSID Task is being DELAY! dt = [%f]",
+               &sysid_dt);
     osDelay(1);
   }
 }
@@ -189,12 +190,12 @@ __attribute__((noreturn)) void StartPOWERTASK(void const *argument) {
   for (;;) {
     // 500Hz: 2ms周期
     power_start = DWT_GetTimeline_ms();
-    PowerControllerTask();  // RLS更新 + 能量环控制
+    PowerControllerTask(); // RLS更新 + 能量环控制
     power_dt = DWT_GetTimeline_ms() - power_start;
-    
+
     if (power_dt > 2)
       LOGERROR("[freeRTOS] POWER Task is being DELAY! dt = [%f]", &power_dt);
-    
+
     osDelay(2);
   }
 }

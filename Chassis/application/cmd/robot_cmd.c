@@ -29,6 +29,9 @@
       (angle) = PITCH_MIN_ANGLE;                                               \
   } while (0)
 
+static const float RC_CMD_MAX_LINEAR_SPEED = 2.0f;  // m/s
+static const float RC_CMD_MAX_ANGULAR_SPEED = 2.5f; // rad/s
+
 /* cmd应用包含的模块实例指针和交互信息存储*/
 #ifdef GIMBAL_BOARD // 对双板的兼容,条件编译
 #include "can_comm.h"
@@ -249,19 +252,11 @@ static void RemoteControlSet() {
   /*******************************************************************************************************
    */
   // 底盘改为左摇杆
-  static float vx_increment_filtered = 0.0f;
-  static float vy_increment_filtered = 0.0f;
+  float vx_norm = (float)rc_data[TEMP].rc.rocker_l_ / 660.0f;
+  // float vy_norm = (float)rc_data[TEMP].rc.rocker_l1 / 660.0f;
 
-  float vx_increment = 41.3f * (float)rc_data[TEMP].rc.rocker_l_;
-  float vy_increment = 41.3f * (float)rc_data[TEMP].rc.rocker_l1;
-
-  vx_increment_filtered =
-      LowPassFilter_Float(vx_increment, 0.20f, &vx_increment_filtered);
-  vy_increment_filtered =
-      LowPassFilter_Float(vy_increment, 0.20f, &vy_increment_filtered);
-
-  chassis_cmd_send.vx = vx_increment_filtered;
-  chassis_cmd_send.vy = vy_increment_filtered;
+  chassis_cmd_send.vx = vx_norm;
+  // chassis_cmd_send.vy = vy_norm;
   /*********************************************************************************************************
    */
   // 云台改为右摇杆，添加低通滤波
@@ -276,7 +271,7 @@ static void RemoteControlSet() {
   yaw_increment =
       LowPassFilter_Float(yaw_increment, 0.18f, &yaw_increment_filtered);
   pitch_increment =
-      LowPassFilter_Float(pitch_increment, 0.18f, &pitch_increment_filtered);
+      LowPassFilter_Float(pitch_increment, 0.85f, &pitch_increment_filtered);
 
   // 更新目标角度
   gimbal_cmd_send.yaw += yaw_increment;

@@ -10,13 +10,82 @@
 #include "referee_task.h"
 #include "robot_def.h"
 #include "super_cap.h"
+#include "sysid_task.h"
 #include "user_lib.h"
+
+/* ============================================================
+ * 系统辨识控制开关（测试时改为1，完成后改为0）
+ * ============================================================ */
+#define ENABLE_CHASSIS_SYSID 0 // 0-关闭，1-启动辨识
+#define SYSID_TARGET_MOTOR 0   // 0-左前lf, 1-右前rf, 2-左后lb, 3-右后rb
+
+#if ENABLE_CHASSIS_SYSID
+static Publisher_t *sysid_macro_pub = NULL;
+static uint8_t sysid_macro_done = 0;
+
+/**
+ * @brief 系统辨识宏开关触发函数
+ * @note 当ENABLE_CHASSIS_SYSID=1时，上电3秒后自动启动辨识
+ *       辨识运行20秒后自动停止，电机完全停止
+ *       测试完成后，将宏改为0，重新编译即可恢复正常
+ *
+ * 使用说明：
+ *   1. 架起机器人（轮子悬空）
+ *   2. 修改上面的宏：ENABLE_CHASSIS_SYSID = 1
+ *   3. 选择目标电机：SYSID_TARGET_MOTOR = 0~3
+ *   4. 编译烧录
+ *   5. 配置Ozone记录变量（见文档）
+ *   6. 上电等待3秒 → 自动启动辨识（持续20秒）
+ *   7. 20秒后电机自动停止
+ *   8. Ozone导出CSV，运行MATLAB分析
+ *   9. 测试完成后，改回：ENABLE_CHASSIS_SYSID = 0
+ */
+static void ChassisSystemIDSwitch() {
+  static uint8_t sysid_stop_sent = 0;
+
+  // 第一阶段：启动辨识（上电3秒后）
+  if (!sysid_macro_done && DWT_GetTimeline_s() > 3.0f) {
+    // 首次调用，注册发布者
+    if (sysid_macro_pub == NULL) {
+      sysid_macro_pub =
+          PubRegister("chassis_sysid_cmd", sizeof(Chassis_SysID_Ctrl_Cmd_s));
+    }
+
+    // 发布启动指令
+    Chassis_SysID_Ctrl_Cmd_s sysid_cmd = {
+        .enable = 1,
+        .target_motor = SYSID_TARGET_MOTOR,
+    };
+    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+
+    sysid_macro_done = 1; // 标记已触发
+  }
+
+  // 第二阶段：确保停止（上电25秒后，辨识应该已完成）
+  if (sysid_macro_done && !sysid_stop_sent && DWT_GetTimeline_s() > 25.0f) {
+    // 发送停止指令（确保辨识任务退出）
+    Chassis_SysID_Ctrl_Cmd_s sysid_cmd = {
+        .enable = 0,
+        .target_motor = SYSID_TARGET_MOTOR,
+    };
+    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+
+    sysid_stop_sent = 1; // 标记已发送停止指令
+    // 注意：电机停止由sysid_task.c中的逻辑处理
+  }
+}
+#endif
+/* ============================================================ */
 
 /* 根据robot_def.h中的macro自动计算的参数 */
 #define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)     // 半轴距
 #define HALF_TRACK_WIDTH (TRACK_WIDTH / 2.0f)   // 半轮距
 #define PERIMETER_WHEEL (RADIUS_WHEEL * 2 * PI) // 轮子周长
 #define SPEED_DEADBAND_THRESHOLD 120.0f         // 角度/秒，约80rpm
+
+/* 遥控器速度增益 - 将归一化值转换为实际速度 */
+static const float RC_CMD_MAX_LINEAR_SPEED = 2.0f;  // m/s 线速度最大值
+static const float RC_CMD_MAX_ANGULAR_SPEED = 2.5f; // rad/s 角速度最大值
 // 斜坡补偿相关
 #define ROBOT_WEIGHT_FORCE (CHASSIS_MASS * GRAVITY_ACCEL) // 机器人重量
 #define INV_TOTAL_WHEELBASE                                                    \
@@ -54,95 +123,66 @@ static float last_follow_wz = 0.0f; // 记录上一次跟随模式的wz输出，
 
 /* 功率控制相关变量已移至独立的power_controller模块 */
 
+/* ----------------力控策略相关变量---------------- */
+// 力控LQR控制器（替换PID实现更优控制）
+// 力控PID控制器（速度→力/扭矩）
+static PIDInstance chassis_force_x_pid; // X方向速度PID（输出：力 N）
+static PIDInstance chassis_force_y_pid; // Y方向速度PID（输出：力 N）
+static PIDInstance chassis_torque_pid;  // 旋转速度PID（输出：扭矩 N·m）
+
+// 速度估算相关变量
+static float chassis_estimated_vx = 0.0f; // 底盘估算速度X (m/s)
+static float chassis_estimated_vy = 0.0f; // 底盘估算速度Y (m/s)
+static float chassis_estimated_wz = 0.0f; // 底盘估算角速度 (rad/s)
+
+// 力控中间变量
+static float force_x = 0.0f;   // X方向控制力 (N)
+static float force_y = 0.0f;   // Y方向控制力 (N)
+static float torque_z = 0.0f;  // Z轴控制扭矩 (N·m)
+static float wheel_force[4];   // 各轮分配的力 (N)
+static float wheel_current[4]; // 各轮电流指令 (A)
+
 /* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
-static float chassis_vx, chassis_vy;     // 将云台系的速度投影到底盘
-static float vt_lf, vt_rf, vt_lb, vt_rb; // 底盘速度解算后的临时输出,待进行限幅
-// 单独轮子的速度前馈（单位: angle per second，度/秒）
-static float ff_spd_lf, ff_spd_rf, ff_spd_lb, ff_spd_rb;
-// 阻力补偿数值
-#define FRICTION_COMP_LF 0 // 左前轮的静摩擦补偿值 (示例值)
-#define FRICTION_COMP_RF 0 // 右前轮的静摩擦补偿值 (示例值)
-#define FRICTION_COMP_LB 0 // 左后轮的静摩擦补偿值 (示例值)
-#define FRICTION_COMP_RB 0 // 右后轮的静摩擦补偿值 (示例值)
-//  速度死区 (解决零点震荡问题) (单位: rpm)
-//    当电机目标转速的绝对值低于此值时, 不施加任何阻力补偿
-//    可以从一个较小的值开始尝试, 如 10-30 RPM
-#define FRICTION_DEADBAND_RPM 20.0f
+static float chassis_vx, chassis_vy; // 将云台系的速度投影到底盘坐标系
 
-//  最大补偿限制 (解决目标值太大发散问题) (单位: CAN command value)
-//    阻力补偿的总输出不会超过此值。通常远小于电机的最大电流(16384)
-//    建议从一个保守的值开始, 如 500
-#define MAX_FRICTION_COMP_CMD 500
+// ⭐ 力控 + 速度内环：麦轮正运动学解算的目标轮速（rad/s）
+static float target_wheel_omega[4]; // 各轮目标角速度，用于速度内环反馈
 
-// 阻力补偿一阶连续化过渡窗口 (rpm)
-#define FRICTION_LINEAR_WINDOW_RPM 30.0f
-
-#define MAX_SLOPE_COMP_CMD 3000
+#define MAX_SLOPE_COMP_CMD 3000 // 坡度补偿最大限幅（预留功能）
 
 void ChassisInit() {
   // 四个轮子的参数一样,改tx_id和反转标志位即可
   Motor_Init_Config_s chassis_motor_config = {
-      .can_init_config.can_handle = &hcan1,
-      .controller_param_init_config =
-          {
-              .speed_PID =
-                  {
-                      .Kp = 1.38f, // 纯P控制，适当增大Kp补偿稳态误差
-                      .Ki = 0.0f,  // 关闭积分，避免功耗问题
-                      .Kd = 0.06f, // 暂不使用D项
-                      .Derivative_LPF_RC = 0.06f,
-                      .IntegralLimit = 0.0f, // 无积分项，设为0
-                      .Improve =
-                          PID_DerivativeFilter |
-                          PID_Derivative_On_Measurement, // 关闭所有改进特性，纯P控制
-                      .MaxOut = 20000,                   // 保持较大的输出限制
-                  },
-              .current_PID =
-                  {
-                      .Kp = 0.8f,                  // 纯P控制，降低Kp避免振荡
-                      .Ki = 0.0f,                  // 关闭积分，彻底避免功耗
-                      .Kd = 0.0f,                  // 暂不使用D项
-                      .IntegralLimit = 0,          // 无积分项，设为0
-                      .Improve = PID_IMPROVE_NONE, // 关闭所有改进特性，纯P控制
-                      .MaxOut = 20000,             // 保持较大的输出限制
-                  },
-          },
+      .can_init_config = {.can_handle = &hcan1},
       .controller_setting_init_config =
           {
               .angle_feedback_source = MOTOR_FEED,
               .speed_feedback_source = MOTOR_FEED,
-              .outer_loop_type = SPEED_LOOP,
-              .close_loop_type = SPEED_LOOP,
+              .outer_loop_type = OPEN_LOOP,
+              .close_loop_type = OPEN_LOOP,
+              .feedforward_flag = FEEDFORWARD_NONE,
           },
       .motor_type = M3508,
   };
-  // 设置速度前馈
+
   chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
-      &ff_spd_lf;
-  chassis_motor_config.controller_setting_init_config.feedforward_flag =
-      SPEED_FEEDFORWARD;
+      NULL;
 
   chassis_motor_config.can_init_config.tx_id = 2;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_REVERSE; // 修改：左前电机反转
   motor_lf = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
-      &ff_spd_rf;
   chassis_motor_config.can_init_config.tx_id = 3;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_NORMAL; // 修改：右前电机反转
   motor_rf = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
-      &ff_spd_lb;
   chassis_motor_config.can_init_config.tx_id = 1;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_NORMAL; // 保持：左后电机正常
   motor_lb = DJIMotorInit(&chassis_motor_config);
 
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
-      &ff_spd_rb;
   chassis_motor_config.can_init_config.tx_id = 4;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
       MOTOR_DIRECTION_REVERSE; // 保持：右后电机正常
@@ -191,236 +231,334 @@ void ChassisInit() {
   chassis_pub = PubRegister("chassis_feed", sizeof(Chassis_Upload_Data_s));
 #endif // ONE_BOARD
 
-  // 底盘跟随云台PID控制器初始化
+  // 底盘跟随云台PID控制器初始化（⭐ 统一力控：输出角速度）
+  // ⭐ 注意：输出单位为角速度（rad/s），后续通过力控PID转换为扭矩
   PID_Init_Config_s follow_pid_config = {
-      .Kp = 42.0f,             // 保持不变，效果好
-      .Ki = 4.0f,              // 从4.0降到2.5，减慢积分
-      .Kd = 0.0f,              // 保持不变
-      .IntegralLimit = 150.0f, // 从200增到350，增大空间
-      .MaxOut = 8000.0f,       // 保持不变
-      .DeadBand = 0.15f,       // 从0.32缩小到0.15
-      .Improve = PID_Integral_Limit | PID_ChangingIntegrationRate, // ⬅️ 关键！
-      // 变速积分参数
-      .CoefA = 3.0f, // 积分削弱区间：3度
-      .CoefB = 0.8f, // 完全积分阈值：0.8度内完全积分
+      .Kp = 0.25f,               // ⭐ 单位：(rad/s)/度（角度误差→角速度）
+      .Ki = 0.05f,               // 积分增益（可选开启）
+      .Kd = 0.0f,                // 微分增益（暂不使用）
+      .Derivative_LPF_RC = 0.0f, // 不使用微分滤波
+      .IntegralLimit = 0.5f,     // ⭐ 积分限幅：1 rad/s
+      .MaxOut = 3.0f,            // ⭐ 最大输出：3 rad/s（底盘旋转角速度）
+      .DeadBand = 0.0f,          // ⭐ 死区：0.25度（静止时更稳定）
+      .Improve = PID_Integral_Limit,
   };
   PIDInit(&chassis_follow_pid, &follow_pid_config);
+
+  /* ----------------力控策略PID初始化---------------- */
+  // X方向力控PID初始化 (输出单位: N)
+  PID_Init_Config_s force_x_pid_config = {
+      .Kp = 200.0f,                // 比例增益 [N/(m/s)]
+      .Ki = 0.0f,                  // 积分增益 [N/(m·s)]
+      .Kd = 0.0f,                  // ⭐ 微分增益 [N·s/m]（抑制超调）
+      .Derivative_LPF_RC = 0.12f,  // 微分低通滤波
+      .IntegralLimit = 100.0f,     // 积分限幅 [N]
+      .MaxOut = MAX_CONTROL_FORCE, // 最大输出力 [N]
+      .DeadBand = 0.01f,           // 死区 [m/s]
+      .Improve = PID_Integral_Limit | PID_Derivative_On_Measurement |
+                 PID_DerivativeFilter | PID_Trapezoid_Intergral |
+                 PID_ChangingIntegrationRate,
+  };
+  PIDInit(&chassis_force_x_pid, &force_x_pid_config);
+
+  // Y方向力控PID初始化 (输出单位: N)
+  PID_Init_Config_s force_y_pid_config = {
+      .Kp = 10.0f,
+      .Ki = 0.0f,
+      .Kd = 0.0f,
+      .Derivative_LPF_RC = 0.02f,
+      .IntegralLimit = 100.0f,
+      .MaxOut = MAX_CONTROL_FORCE,
+      .DeadBand = 0.05f,
+      .Improve = PID_Integral_Limit | PID_Derivative_On_Measurement |
+                 PID_DerivativeFilter | PID_Trapezoid_Intergral,
+  };
+  PIDInit(&chassis_force_y_pid, &force_y_pid_config);
+
+  // 旋转扭矩PID初始化 (输出单位: N·m)
+  PID_Init_Config_s torque_pid_config = {
+      .Kp = 30.0f, // 比例增益 [N·m/(rad/s)]
+      .Ki = 0.0f,  // 积分增益 [N·m/rad]
+      .Kd = 1.2f,  // 微分增益 [N·m·s/rad]
+      .Derivative_LPF_RC = 0.02f,
+      .IntegralLimit = 50.0f, // 积分限幅 [N·m]
+      .MaxOut = MAX_CONTROL_TORQUE,
+      .DeadBand = 0.05f, // 死区 [rad/s]
+      .Improve = PID_Integral_Limit | PID_Derivative_On_Measurement |
+                 PID_DerivativeFilter,
+  };
+  PIDInit(&chassis_torque_pid, &torque_pid_config);
+
+  /* ----------------底盘系统辨识初始化---------------- */
+  // 初始化底盘轮速系统辨识任务（用于LQR参数标定）
+  Chassis_SysIDTaskInit(motor_lf, motor_rf, motor_lb, motor_rb);
 }
 
+// 计算每个轮子到旋转中心的距离（单位：m）
+// 使用勾股定理: r = sqrt(x^2 + y^2)
+// ⭐ WHEEL_BASE和TRACK_WIDTH在robot_def.h中已经是m，无需转换
 #define LF_CENTER                                                              \
-  ((HALF_TRACK_WIDTH + CENTER_GIMBAL_OFFSET_X + HALF_WHEEL_BASE -              \
-    CENTER_GIMBAL_OFFSET_Y) *                                                  \
-   DEGREE_2_RAD)
+  sqrtf(powf(HALF_TRACK_WIDTH + CENTER_GIMBAL_OFFSET_X, 2.0f) +                \
+        powf(HALF_WHEEL_BASE - CENTER_GIMBAL_OFFSET_Y, 2.0f))
 #define RF_CENTER                                                              \
-  ((HALF_TRACK_WIDTH - CENTER_GIMBAL_OFFSET_X + HALF_WHEEL_BASE -              \
-    CENTER_GIMBAL_OFFSET_Y) *                                                  \
-   DEGREE_2_RAD)
+  sqrtf(powf(HALF_TRACK_WIDTH - CENTER_GIMBAL_OFFSET_X, 2.0f) +                \
+        powf(HALF_WHEEL_BASE - CENTER_GIMBAL_OFFSET_Y, 2.0f))
 #define LB_CENTER                                                              \
-  ((HALF_TRACK_WIDTH + CENTER_GIMBAL_OFFSET_X + HALF_WHEEL_BASE +              \
-    CENTER_GIMBAL_OFFSET_Y) *                                                  \
-   DEGREE_2_RAD)
+  sqrtf(powf(HALF_TRACK_WIDTH + CENTER_GIMBAL_OFFSET_X, 2.0f) +                \
+        powf(HALF_WHEEL_BASE + CENTER_GIMBAL_OFFSET_Y, 2.0f))
 #define RB_CENTER                                                              \
-  ((HALF_TRACK_WIDTH - CENTER_GIMBAL_OFFSET_X + HALF_WHEEL_BASE +              \
-    CENTER_GIMBAL_OFFSET_Y) *                                                  \
-   DEGREE_2_RAD)
+  sqrtf(powf(HALF_TRACK_WIDTH - CENTER_GIMBAL_OFFSET_X, 2.0f) +                \
+        powf(HALF_WHEEL_BASE + CENTER_GIMBAL_OFFSET_Y, 2.0f))
 // 坡度补偿相关定义
 #define BACK_COG_LENGTH                                                        \
   DIST_CG_REAR_AXLE // 暂未整定前后重心,所以直接使用前后轮距的一半
 #define FRONT_COG_LENGTH DIST_CG_FRONT_AXLE // 可以直接在robot_def.h中修改定义
-/**
- * @brief 计算每个轮毂电机的输出,正运动学解算
- *        用宏进行预替换减小开销,运动解算具体过程参考教程
- */
-static void MecanumCalculate() {
-  vt_lf = (-chassis_vx - chassis_vy) + chassis_cmd_recv.wz * LF_CENTER;
-  vt_rf = (-chassis_vx + chassis_vy) - chassis_cmd_recv.wz * RF_CENTER;
-  vt_lb = (chassis_vx - chassis_vy) - chassis_cmd_recv.wz * LB_CENTER;
-  vt_rb = (chassis_vx + chassis_vy) + chassis_cmd_recv.wz * RB_CENTER;
-}
-
-static void SlopeCompensation() {
-#ifdef CHASSIS_BOARD
-  // 1. 获取sin/cos值
-  float cos_pitch = arm_cos_f32(Chassis_IMU_data->Pitch);
-  float sin_pitch = arm_sin_f32(Chassis_IMU_data->Pitch);
-
-  // 2. 计算力
-  float total_compensation_force = ROBOT_WEIGHT_FORCE * sin_pitch;
-  float total_normal_force = ROBOT_WEIGHT_FORCE * cos_pitch;
-
-  // 3. 计算法向力
-  float front_axle_normal_force = (DIST_CG_REAR_AXLE * total_normal_force -
-                                   CG_HEIGHT * total_compensation_force) *
-                                  INV_TOTAL_WHEELBASE;
-  float rear_axle_normal_force = (DIST_CG_FRONT_AXLE * total_normal_force +
-                                  CG_HEIGHT * total_compensation_force) *
-                                 INV_TOTAL_WHEELBASE;
-
-  // 4. 安全校验
-  if (front_axle_normal_force < 0)
-    front_axle_normal_force = 0;
-  if (rear_axle_normal_force < 0)
-    rear_axle_normal_force = 0;
-
-  float actual_total_normal_force =
-      front_axle_normal_force + rear_axle_normal_force;
-
-  // 5. 避免除零错误和增加坡度死区
-  if (actual_total_normal_force < 1e-3f ||
-      fabsf(Chassis_IMU_data->Pitch) < 2.5f) {
-    return;
-  }
-
-  // 6. 计算最终补偿扭矩并转换为CAN指令值
-  float inv_actual_total_normal_force = 1.0f / actual_total_normal_force;
-  float common_factor = total_compensation_force *
-                        inv_actual_total_normal_force * HALF_WHEEL_RADIUS *
-                        M3508_TORQUE_TO_CURRENT_CMD_COEFF;
-
-  float front_wheel_comp_cmd = front_axle_normal_force * common_factor;
-  float rear_wheel_comp_cmd = rear_axle_normal_force * common_factor;
-
-  // 7. 限幅
-  front_wheel_comp_cmd =
-      float_constrain(front_wheel_comp_cmd, 0, MAX_SLOPE_COMP_CMD);
-  rear_wheel_comp_cmd =
-      float_constrain(rear_wheel_comp_cmd, 0, MAX_SLOPE_COMP_CMD);
-
-  // 8. 将扭矩补偿转换为速度前馈（简化：直接转为速度增量）
-  // 注意：这里需要根据电机模型将扭矩转换为速度，当前简化处理
-  // 更精确的做法是使用电机动力学模型：tau = J*alpha + b*omega
-  float speed_comp_scale = 0.1f; // 扭矩到速度的缩放系数，需根据实际调试
-  ff_spd_lf += front_wheel_comp_cmd * speed_comp_scale;
-  ff_spd_rf += front_wheel_comp_cmd * speed_comp_scale;
-  ff_spd_lb += rear_wheel_comp_cmd * speed_comp_scale;
-  ff_spd_rb += rear_wheel_comp_cmd * speed_comp_scale;
-#else
-  // 非 CHASSIS_BOARD 构建时不做坡度补偿，避免未定义 IMU 引用
-  (void)HALF_WHEEL_RADIUS;
-#endif
-}
-
-// 一阶连续化的阻力补偿计算: 在零速附近按线性比例放大到满额, 超出窗口给满额
-static inline float ComputeFrictionFF(float measured_speed_aps,
-                                      float ref_speed_cmd,
-                                      float friction_full_cmd,
-                                      float linear_window_aps) {
-  float direction = 0.0f;
-  if (fabsf(measured_speed_aps) > 1e-6f)
-    direction = (measured_speed_aps > 0.0f) ? 1.0f : -1.0f; // 以实际速度为主
-  else if (fabsf(ref_speed_cmd) > 1e-3f)
-    direction = (ref_speed_cmd > 0.0f) ? 1.0f : -1.0f; // 零速处回退参考方向
-  if (direction == 0.0f)
-    return 0.0f;
-
-  float abs_speed = fabsf(measured_speed_aps);
-  float gain = 1.0f;
-  if (abs_speed < linear_window_aps)
-    gain = abs_speed / linear_window_aps; // 一阶连续化：零点线性过渡
-
-  float cmd = direction * friction_full_cmd * gain;
-  return float_constrain(cmd, -MAX_FRICTION_COMP_CMD, MAX_FRICTION_COMP_CMD);
-}
-
-static void ResistanceCompensation() {
-  // 摩擦/阻力补偿: 一阶连续化零点过渡 + 方向回退 + 前馈限幅
-  const float linear_window_aps =
-      FRICTION_LINEAR_WINDOW_RPM * RPM_2_ANGLE_PER_SEC;
-
-  // 阻力补偿现在直接作用于速度前馈
-  // 注意：FRICTION_COMP_* 原本是电流值，需要转换为速度增量
-  // 简化方案：将摩擦力补偿值缩放后加到速度前馈
-  float friction_to_speed_scale = 0.05f; // 摩擦补偿到速度的缩放系数，需实测调试
-
-  // 左前
-  ff_spd_lf += ComputeFrictionFF(motor_lf->measure.speed_aps, vt_lf,
-                                 FRICTION_COMP_LF, linear_window_aps) *
-               friction_to_speed_scale;
-  // 右前
-  ff_spd_rf += ComputeFrictionFF(motor_rf->measure.speed_aps, vt_rf,
-                                 FRICTION_COMP_RF, linear_window_aps) *
-               friction_to_speed_scale;
-  // 左后
-  ff_spd_lb += ComputeFrictionFF(motor_lb->measure.speed_aps, vt_lb,
-                                 FRICTION_COMP_LB, linear_window_aps) *
-               friction_to_speed_scale;
-  // 右后
-  ff_spd_rb += ComputeFrictionFF(motor_rb->measure.speed_aps, vt_rb,
-                                 FRICTION_COMP_RB, linear_window_aps) *
-               friction_to_speed_scale;
-}
-
-/**
- * @brief 功率控制并下发电机参考值（重构版：调用独立功率控制模块）
- * @note  功率控制逻辑已移至power_controller模块
- */
-static void LimitChassisOutput() {
-#if POWER_CONTROLLER_ENABLE
-  // 1. 构造功率对象数组
-  PowerMotorObj_t motor_objs[4] = {
-      {
-          .pid_output = motor_lf->motor_controller.speed_PID.Output,
-          .current_av = motor_lf->measure.speed_aps * DEGREE_2_RAD,
-          .target_av = vt_lf * DEGREE_2_RAD,
-          .pid_max_output = 20000.0f,
-      },
-      {
-          .pid_output = motor_rf->motor_controller.speed_PID.Output,
-          .current_av = motor_rf->measure.speed_aps * DEGREE_2_RAD,
-          .target_av = vt_rf * DEGREE_2_RAD,
-          .pid_max_output = 20000.0f,
-      },
-      {
-          .pid_output = motor_lb->motor_controller.speed_PID.Output,
-          .current_av = motor_lb->measure.speed_aps * DEGREE_2_RAD,
-          .target_av = vt_lb * DEGREE_2_RAD,
-          .pid_max_output = 20000.0f,
-      },
-      {
-          .pid_output = motor_rb->motor_controller.speed_PID.Output,
-          .current_av = motor_rb->measure.speed_aps * DEGREE_2_RAD,
-          .target_av = vt_rb * DEGREE_2_RAD,
-          .pid_max_output = 20000.0f,
-      },
-  };
-
-  // 2. 调用功率控制器获取限制后的输出
-  float limited_output[4];
-  PowerGetLimitedOutput(motor_objs, limited_output);
-
-  // 3. 下发限制后的电机参考值（转换回角度/秒）
-  DJIMotorSetRef(motor_lf, limited_output[0]);
-  DJIMotorSetRef(motor_rf, limited_output[1]);
-  DJIMotorSetRef(motor_lb, limited_output[2]);
-  DJIMotorSetRef(motor_rb, limited_output[3]);
-#else
-  // 不使用功率控制时，直接下发原始参考值
-  DJIMotorSetRef(motor_lf, vt_lf);
-  DJIMotorSetRef(motor_rf, vt_rf);
-  DJIMotorSetRef(motor_lb, vt_lb);
-  DJIMotorSetRef(motor_rb, vt_rb);
-#endif
-}
-
-static void ClearFeedforward() {
-  ff_spd_lf = ff_spd_rf = ff_spd_lb = ff_spd_rb = 0.0f;
-}
-
-/**
- * @brief 根据每个轮子的速度反馈,计算底盘的实际运动速度,逆运动解算
- *        对于双板的情况,考虑增加来自底盘板IMU的数据
- *
- */
-static void EstimateSpeed() {
-  // 根据电机速度和陀螺仪的角速度进行解算,还可以利用加速度计判断是否打滑(如果有)
-  // chassis_feedback_data.vx vy wz =
-  //  ...
-}
 
 /* ==================================================== */
+/* ----------------力控策略核心函数---------------- */
+/* ==================================================== */
+
+/**
+ * @brief 麦轮正运动学解算 - 计算各轮目标角速度（用于速度内环反馈）
+ * @note  参考robowalker的Kinematics_Inverse_Resolution思想
+ *        从底盘速度(vx,vy,wz)解算出各轮的目标角速度
+ *        这是力控+速度内环的关键：提供轮速目标值用于动态补偿
+ */
+static void MecanumKinematicsCalculate() {
+  // 麦轮正运动学：从底盘速度解算各轮线速度
+  // v_wheel = v_chassis + ω × r_vec
+  // 对于45度麦轮，与力分配公式对应
+
+  float vx = chassis_vx;
+  float vy = chassis_vy;
+  float wz = chassis_cmd_recv.wz;
+
+  // 计算各轮线速度（m/s）- 必须与力分配公式的符号一致
+  float wheel_linear_vel[4];
+  wheel_linear_vel[0] = (-vx - vy) + wz * LF_CENTER; // 左前 +wz
+  wheel_linear_vel[1] = (-vx + vy) - wz * RF_CENTER; // 右前 -wz
+  wheel_linear_vel[2] = (vx - vy) - wz * LB_CENTER;  // 左后 -wz
+  wheel_linear_vel[3] = (vx + vy) + wz * RB_CENTER;  // 右后 +wz
+
+  // 转换为电机角速度（rad/s）
+  // ⭐ 关键：线速度 → 轮子角速度 → 电机角速度（考虑减速比）
+  for (int i = 0; i < 4; i++) {
+    // 轮子角速度 = 线速度 / 轮子半径
+    float wheel_omega = wheel_linear_vel[i] / RADIUS_WHEEL;
+    // 电机角速度 = 轮子角速度 × 减速比
+    target_wheel_omega[i] = wheel_omega * REDUCTION_RATIO_WHEEL;
+  }
+}
+
+/**
+ * @brief 估算底盘当前速度（基于电机反馈）
+ * @note  采用一阶低通滤波平滑速度估算，后续可替换为卡尔曼滤波
+ */
+static void EstimateChassisVelocity() {
+  // 麦轮逆运动学：根据四个轮速反推底盘速度
+  // 将电机角速度转换为轮子线速度 (m/s)
+  // ⭐ 注意：反转电机的速度反馈需要取反，以匹配底盘运动学坐标系
+  float lf_linear_vel = -motor_lf->measure.speed_aps * DEGREE_2_RAD *
+                        RADIUS_WHEEL / REDUCTION_RATIO_WHEEL;
+  float rf_linear_vel = motor_rf->measure.speed_aps * DEGREE_2_RAD *
+                        RADIUS_WHEEL / REDUCTION_RATIO_WHEEL;
+  float lb_linear_vel = motor_lb->measure.speed_aps * DEGREE_2_RAD *
+                        RADIUS_WHEEL / REDUCTION_RATIO_WHEEL;
+  float rb_linear_vel = -motor_rb->measure.speed_aps * DEGREE_2_RAD *
+                        RADIUS_WHEEL / REDUCTION_RATIO_WHEEL;
+
+  // 麦轮逆解算（底盘坐标系）
+  // 从正解算推导逆运动学方程：
+  // vx = (-v_lf - v_rf + v_lb + v_rb) / 4  (纵向速度)
+  // vy = (-v_lf + v_rf - v_lb + v_rb) / 4  (横向速度)
+  // wz = (v_lf - v_rf - v_lb + v_rb) / (4 * r) (旋转角速度)
+  // ⭐ WHEEL_BASE和TRACK_WIDTH在robot_def.h中已经是m，直接计算即可
+  float r = sqrtf(HALF_WHEEL_BASE * HALF_WHEEL_BASE +
+                  HALF_TRACK_WIDTH * HALF_TRACK_WIDTH);
+
+  float instant_vx =
+      (-lf_linear_vel - rf_linear_vel + lb_linear_vel + rb_linear_vel) / 4.0f;
+  float instant_vy =
+      (-lf_linear_vel + rf_linear_vel - lb_linear_vel + rb_linear_vel) / 4.0f;
+  float instant_wz =
+      (lf_linear_vel - rf_linear_vel - lb_linear_vel + rb_linear_vel) /
+      (4.0f * r);
+
+  // ⭐ 优化1：一阶低通滤波平滑估算，过滤编码器噪声
+  // α=0.35 对应截止频率约10Hz（在200Hz采样率下）
+  static float filtered_vx = 0.0f;
+  static float filtered_vy = 0.0f;
+  static float filtered_wz = 0.0f;
+
+  const float LPF_ALPHA = 0.35f; // 滤波系数
+
+  // LowPassFilter_Float(新值, 滤波系数, 上次值指针)
+  chassis_estimated_vx = instant_vx;
+  chassis_estimated_vy = instant_vy;
+  chassis_estimated_wz = instant_wz;
+}
+
+/**
+ * @brief 速度闭环控制 → 力/扭矩输出（力控核心环节1）
+ * @note  使用PID替代LQR，更易于调参
+ *        参考robowalker的Output_To_Dynamics思想：速度控制器输出力而非速度
+ *        ✅ 统一力控链路：所有速度目标（包括跟随角速度）都通过力控PID转换
+ */
+static void VelocityToForceControl() {
+  // 更新速度估算
+  EstimateChassisVelocity();
+
+  // 计算目标速度（从运动学解算得到，单位：m/s和rad/s）
+  // ✅ 统一处理：所有模式下wz都是角速度(rad/s)
+  //    - 跟随模式：wz = 跟随PID输出的目标角速度
+  //    - 小陀螺：wz = 固定角速度（如2.5 rad/s）
+  //    - 不跟随：wz = 0
+  float target_vx = chassis_vx;
+  float target_vy = chassis_vy;
+  float target_wz = chassis_cmd_recv.wz; // 统一为角速度(rad/s)
+
+  // 速度PID → 力/扭矩（输出力而非速度！）
+  // PID输出的是需要的合力(N)和合扭矩(N·m)
+  force_x = PIDCalculate(&chassis_force_x_pid, chassis_estimated_vx, target_vx);
+  force_y = PIDCalculate(&chassis_force_y_pid, chassis_estimated_vy, target_vy);
+  torque_z = PIDCalculate(&chassis_torque_pid, chassis_estimated_wz, target_wz);
+
+  // 限幅保护（PID内部已有限幅，这里作为二次保护）
+  force_x = float_constrain(force_x, -MAX_CONTROL_FORCE, MAX_CONTROL_FORCE);
+  // force_y = float_constrain(force_y, -MAX_CONTROL_FORCE, MAX_CONTROL_FORCE);
+  // torque_z = float_constrain(torque_z, -MAX_CONTROL_TORQUE,
+  // MAX_CONTROL_TORQUE);
+}
+/**
+ * @brief 力的动力学逆解算（力控核心环节2）
+ * @note  将底盘合力分配到各个轮子，参考robowalker的Dynamics_Inverse_Resolution
+ */
+static void ForceDynamicsInverseResolution() {
+  // 麦轮力分配（参考robowalker思想）
+  // 对于麦轮，每个轮子受到的力 = 平移力分量 + 旋转力矩分量
+  // 计算旋转半径（单位：m）
+  // ⭐ WHEEL_BASE和TRACK_WIDTH在robot_def.h中已经是m，直接计算即可
+  float rotation_radius = sqrtf(HALF_WHEEL_BASE * HALF_WHEEL_BASE +
+                                HALF_TRACK_WIDTH * HALF_TRACK_WIDTH);
+
+  // 力分配矩阵（麦轮45度辊子配置）
+  // wheel_force[i] = f_x * cos(angle) + f_y * sin(angle) + torque / r *
+  // sin(wheel_angle) ⭐ 修正：符号必须与正解算中的wz符号一致！
+  //
+  // 正解算符号参考（333-337行）：
+  // vt_lf = ... + wz * LF_CENTER   → +wz
+  // vt_rf = ... - wz * RF_CENTER   → -wz
+  // vt_lb = ... - wz * LB_CENTER   → -wz
+  // vt_rb = ... + wz * RB_CENTER   → +wz
+
+  // 左前轮 (45度配置) → +wz
+  wheel_force[0] =
+      (-force_x - force_y) / 4.0f + torque_z / (4.0f * rotation_radius);
+
+  // 右前轮 → -wz
+  wheel_force[1] =
+      (-force_x + force_y) / 4.0f - torque_z / (4.0f * rotation_radius);
+
+  // 左后轮 → -wz
+  wheel_force[2] =
+      (force_x - force_y) / 4.0f - torque_z / (4.0f * rotation_radius);
+
+  // 右后轮 → +wz
+  wheel_force[3] =
+      (force_x + force_y) / 4.0f + torque_z / (4.0f * rotation_radius);
+}
+
+/**
+ * @brief 力→电流转换 + 摩擦补偿（力控核心环节3）
+ * @note  参考robowalker的动摩擦补偿思想，实现零点连续化
+ */
+static void ForceToCurrentConversion() {
+  // 依次处理四个轮子
+  DJIMotorInstance *motors[4] = {motor_lf, motor_rf, motor_lb, motor_rb};
+
+  for (int i = 0; i < 4; i++) {
+    // 1. 基础转换：F = τ/r，τ = K_t * I，因此 I = F * r / K_t
+    // 考虑减速比：轮侧力矩 = 电机扭矩 * 减速比
+    // wheel_torque = motor_torque * reduction_ratio
+    // F * r = motor_torque * reduction_ratio
+    // motor_torque = F * r / reduction_ratio
+    // I = motor_torque / K_t = F * r / (K_t * reduction_ratio)
+    float base_current = wheel_force[i] * RADIUS_WHEEL / M3508_TORQUE_CONSTANT;
+
+    // 2. ⭐ 速度内环反馈（参考robowalker，补偿电机动态特性）
+    // 这一项补偿电机的惯性和阻尼，提高动态响应
+    // Current_feedback = K_speed × (ω_target - ω_actual)
+    float actual_omega;
+    if (i == 0 || i == 3) { // 左前、右后电机安装反向
+      actual_omega = -motors[i]->measure.speed_aps * DEGREE_2_RAD;
+    } else {
+      actual_omega = motors[i]->measure.speed_aps * DEGREE_2_RAD;
+    }
+    float target_omega = target_wheel_omega[i];
+
+    // ⭐ 优化2：速度内环反馈 + 过零保护（防止反向超调）
+    // 当目标和实际速度符号不同，或都接近零时，减小反馈增益
+    float speed_feedback = 0.0f;
+    float omega_error = target_omega - actual_omega;
+
+    // 过零保护：当速度过零时（目标和实际符号不同），衰减反馈
+    const float OMEGA_THRESHOLD = 15.0f; // rad/s，过零保护阈值
+    if (fabsf(target_omega) < OMEGA_THRESHOLD &&
+        fabsf(actual_omega) < OMEGA_THRESHOLD) {
+      // 两者都很小，接近静止：完全关闭速度反馈，避免零点抖动
+      speed_feedback = 0.0f;
+    } else if (target_omega * actual_omega < 0.0f) {
+      // 符号相反，正在过零：减小反馈增益50%，避免反向超调
+      speed_feedback = 0.05f * WHEEL_SPEED_FEEDBACK_COEFF * omega_error;
+    } else {
+      // 正常运行：全增益反馈
+      speed_feedback = WHEEL_SPEED_FEEDBACK_COEFF * omega_error;
+    }
+
+    // 3. ⭐ 摩擦补偿（参考robowalker的连续化处理，基于目标速度方向）
+    // robowalker第306-317行的思想：根据目标转速方向施加摩擦补偿
+    float friction_comp = 0.0f;
+
+    // ⭐ 关键改进：用目标角速度判断运动方向，而不是实际速度
+    // 这样即使静止启动时也能正确施加摩擦补偿
+    if (target_omega > FRICTION_THRESHOLD_OMEGA) {
+      // 高速正转：使用动摩擦补偿
+      friction_comp = FRICTION_DYNAMIC_CURRENT;
+    } else if (target_omega < -FRICTION_THRESHOLD_OMEGA) {
+      // 高速反转：使用动摩擦补偿
+      friction_comp = -FRICTION_DYNAMIC_CURRENT;
+    } else {
+      // 低速区：线性连续化补偿（避免零点抖动）
+      // 补偿电流与目标角速度成正比
+      friction_comp =
+          target_omega / FRICTION_THRESHOLD_OMEGA * FRICTION_DYNAMIC_CURRENT;
+    }
+
+    // 4. 总电流 = 基础电流 + 速度反馈 + 摩擦补偿
+    // ⭐ 这就是robowalker第304行的完整实现！
+    // wheel_current[i] = base_current + speed_feedback + friction_comp;
+    wheel_current[i] = base_current + speed_feedback + friction_comp;
+
+    // 4. 限幅保护
+    wheel_current[i] = float_constrain(wheel_current[i], -MAX_WHEEL_CURRENT,
+                                       MAX_WHEEL_CURRENT);
+  }
+}
 
 /* 机器人底盘控制核心任务 */
 void ChassisTask() {
+#if ENABLE_CHASSIS_SYSID
+  // 系统辨识宏开关触发（ENABLE_CHASSIS_SYSID=1时有效）
+  ChassisSystemIDSwitch();
+#endif
+
+  // 检查系统辨识是否激活
+  if (Chassis_SysIDIsActive()) {
+    // 系统辨识激活时，完全由辨识任务控制电机
+    // 底盘控制任务不干预，直接返回
+    return;
+  }
+
   // 后续增加没收到消息的处理(双板的情况)
   // 获取新的控制信息
 #ifdef ONE_BOARD
@@ -429,6 +567,13 @@ void ChassisTask() {
 #ifdef CHASSIS_BOARD
   chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chasiss_can_comm);
 #endif // CHASSIS_BOARD
+
+  // === 应用遥控器速度增益 ===
+  // 从Gimbal接收到的vx/vy是归一化值(-1.0~1.0)
+  // 需要乘以增益转换为实际速度(m/s)
+  chassis_cmd_recv.vx *= RC_CMD_MAX_LINEAR_SPEED;
+  chassis_cmd_recv.vy *= RC_CMD_MAX_LINEAR_SPEED;
+  // 注意: wz(角速度)由底盘根据模式自动设定，不需要在这里处理
 
   if (chassis_cmd_recv.chassis_mode ==
       CHASSIS_ZERO_FORCE) { // 如果出现重要模块离线或遥控器设置为急停,让电机停止
@@ -450,26 +595,24 @@ void ChassisTask() {
     last_follow_wz = 0; // 重置滤波状态
     break;
 
-  case CHASSIS_FOLLOW_GIMBAL_YAW: { // 跟随云台,使用PID+一阶滤波控制
-    // PID控制: 期望值为0(对齐),反馈值为near_center_error(就近回位误差)
-    // 输出为底盘旋转角速度,负号是因为角度偏差和底盘旋转方向相反
-    // 注意: 使用near_center_error而非offset_angle,支持车头翻转优化(就近回位)
-    float pid_output = -PIDCalculate(&chassis_follow_pid,
-                                     chassis_cmd_recv.near_center_error, 0.0f);
+  case CHASSIS_FOLLOW_GIMBAL_YAW: { // 跟随云台,统一力控链路
+    // ⭐ PID输出目标角速度（rad/s）
+    // 统一进入力控PID转换为扭矩
+    // 输入：角度误差（度）
+    // 输出：目标角速度（rad/s）
+    float follow_angular_vel = -PIDCalculate(
+        &chassis_follow_pid, chassis_cmd_recv.near_center_error, 0.0f);
 
-    // 使用一阶低通滤波器平滑过渡
-    // K值说明：K越小滤波越强(保持原有运动状态更多)，K越大响应越快
-    // 推荐值: 0.2~0.4
-    // - 小陀螺切换时建议用0.2(保持更多旋转动量)
-    // - 静止跟随时可以用0.3-0.4(响应更快)
-    float filter_K = 0.65f; // 可根据实际调试
+    // 一阶滤波器平滑
+    static float last_follow_wz = 0.0f;
     chassis_cmd_recv.wz =
-        LowPassFilter_Float(pid_output, filter_K, &last_follow_wz);
+        LowPassFilter_Float(follow_angular_vel, 0.25f, &last_follow_wz);
+    // ✅ wz统一为角速度（rad/s），后续通过chassis_torque_pid转换为扭矩
     break;
   }
 
   case CHASSIS_ROTATE: // 自旋,同时保持全向机动;当前wz维持定值,后续增加不规则的变速策略
-    chassis_cmd_recv.wz = 1500;
+    chassis_cmd_recv.wz = 2.5f;           // rad/s
     last_follow_wz = chassis_cmd_recv.wz; // 保存当前wz,便于切换后平滑过渡
     break;
 
@@ -479,25 +622,43 @@ void ChassisTask() {
 
   // 根据云台和底盘的角度offset将控制量映射到底盘坐标系上
   // 底盘逆时针旋转为角度正方向;云台命令的方向以云台指向的方向为x,采用右手系(x指向正北时y在正东)
-  static float sin_theta, cos_theta;
+  /*static float sin_theta, cos_theta;
   cos_theta = arm_cos_f32(chassis_cmd_recv.offset_angle * DEGREE_2_RAD);
   sin_theta = arm_sin_f32(chassis_cmd_recv.offset_angle * DEGREE_2_RAD);
   chassis_vx =
       chassis_cmd_recv.vx * cos_theta - chassis_cmd_recv.vy * sin_theta;
   chassis_vy =
       chassis_cmd_recv.vx * sin_theta + chassis_cmd_recv.vy * cos_theta;
+*/
+  chassis_vx = chassis_cmd_recv.vx;
 
-  // 1. 根据控制模式进行正运动学解算,计算底盘输出
-  MecanumCalculate();
+  /* ================== 力控策略控制流程 ================== */
+  // 参考robowalker的力控思想，实现从速度到电流的完整链路
 
-  // 2. 清零当周期电流前馈
-  // ClearFeedforward();
+  // 0. 正运动学解算：计算各轮目标角速度（用于速度内环）
+  //    ⭐ robowalker的关键：提供轮速目标值用于动态补偿
+  MecanumKinematicsCalculate();
 
-  // 3. 计算坡度补偿前馈（如果底盘需要爬坡则启用）
-  // SlopeCompensation();  // 可选：上下坡场景启用
+  // 1. 速度闭环 → 力/扭矩 (力控核心环节1)
+  //    速度控制器输出的不是速度参考值，而是需要的合力和合扭矩
+  //    ✅ 统一处理：所有模式的wz（角速度）都通过chassis_torque_pid转换为扭矩
+  VelocityToForceControl();
 
-  // 4. 计算阻力补偿前馈（推荐启用！）
-  // ResistanceCompensation(); // 启用摩擦力补偿
+  // 2. 力的动力学逆解算 (力控核心环节2)
+  //    将底盘合力分配到各个轮子
+  ForceDynamicsInverseResolution();
+
+  // 3. 力→电流转换 + 速度内环 + 摩擦补偿 (力控核心环节3)
+  //    ⭐ robowalker核心：base_current + speed_feedback + friction_comp
+  ForceToCurrentConversion();
+
+  // 4. 下发电机电流指令
+  //    注意：这里直接使用wheel_current数组，单位为安培(A)
+  //    需要转换为CAN指令值：cmd = current / M3508_CMD_TO_CURRENT_COEFF
+  DJIMotorSetRef(motor_lf, wheel_current[0] / M3508_CMD_TO_CURRENT_COEFF);
+  DJIMotorSetRef(motor_rf, wheel_current[1] / M3508_CMD_TO_CURRENT_COEFF);
+  DJIMotorSetRef(motor_lb, wheel_current[2] / M3508_CMD_TO_CURRENT_COEFF);
+  DJIMotorSetRef(motor_rb, wheel_current[3] / M3508_CMD_TO_CURRENT_COEFF);
 
 #if POWER_CONTROLLER_ENABLE
   // 4.5. 更新功率控制器数据（在功率限制前更新）
@@ -522,24 +683,19 @@ void ChassisTask() {
       motor_rb->measure.speed_aps * DEGREE_2_RAD,
   };
 
-  // 估算电机转矩（通过PID输出转换）
-  const float TORQUE_CONSTANT = 0.3f;           // Nm/A
-  const float CURRENT_SCALE = 20.0f / 16384.0f; // CAN指令值转电流
+  // 估算电机转矩（通过下发电流转换）
+  const float TORQUE_CONSTANT = 0.3f; // Nm/A
   float motor_torques[4] = {
-      motor_lf->motor_controller.speed_PID.Output * CURRENT_SCALE *
-          TORQUE_CONSTANT,
-      motor_rf->motor_controller.speed_PID.Output * CURRENT_SCALE *
-          TORQUE_CONSTANT,
-      motor_lb->motor_controller.speed_PID.Output * CURRENT_SCALE *
-          TORQUE_CONSTANT,
-      motor_rb->motor_controller.speed_PID.Output * CURRENT_SCALE *
-          TORQUE_CONSTANT,
+      wheel_current[0] * TORQUE_CONSTANT,
+      wheel_current[1] * TORQUE_CONSTANT,
+      wheel_current[2] * TORQUE_CONSTANT,
+      wheel_current[3] * TORQUE_CONSTANT,
   };
   PowerUpdateMotorFeedback(motor_speeds, motor_torques);
 #endif
 
   // 5. 根据裁判系统的反馈数据和电容数据对输出限幅并设定闭环参考值
-  LimitChassisOutput();
+  // LimitChassisOutput();  // 力控策略中已在ForceToCurrentConversion中完成限幅
 
   // 6. 根据电机的反馈速度和IMU(如果有)计算真实速度
   // EstimateSpeed();

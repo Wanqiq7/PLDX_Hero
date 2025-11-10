@@ -45,21 +45,21 @@
 #define REDUCTION_RATIO_LOADER                                                 \
   19.0f                  // 2006拨盘电机的减速比,英雄需要修改为3508的19.0f
 #define NUM_PER_CIRCLE 6 // 拨盘一圈的装载量
-// 机器人底盘修改的参数,单位为mm(毫米)
-#define WHEEL_BASE 560  // 纵向轴距(前进后退方向)
-#define TRACK_WIDTH 330 // 横向轮距(左右平移方向)
+// 机器人底盘修改的参数（⭐ 单位统一为 m，米）
+#define WHEEL_BASE 0.56f  // 纵向轴距(前进后退方向)，单位:m
+#define TRACK_WIDTH 0.33f // 横向轮距(左右平移方向)，单位:m
 #define CENTER_GIMBAL_OFFSET_X                                                 \
-  0 // 云台旋转中心距底盘几何中心的距离,前后方向,云台位于正中心时默认设为0
+  0.0f // 云台旋转中心距底盘几何中心的距离,前后方向，单位:m
 #define CENTER_GIMBAL_OFFSET_Y                                                 \
-  0 // 云台旋转中心距底盘几何中心的距离,左右方向,云台位于正中心时默认设为0
+  0.0f                      // 云台旋转中心距底盘几何中心的距离,左右方向，单位:m
 #define RADIUS_WHEEL 0.077f // 轮子半径(单位m,注意不是直径)
 #define REDUCTION_RATIO_WHEEL                                                  \
   19.0f // 电机减速比,因为编码器量测的是转子的速度而不是输出轴的速度故需进行转换
-#define CHASSIS_MASS 17.0f     // 机器人整备质量,单位kg,用于功率计算
-#define GRAVITY_ACCEL 9.81f    // 重力加速度,单位m/s^2,用于功率计算
-#define DIST_CG_FRONT_AXLE 280 // 重心距前轴距离,单位mm
-#define DIST_CG_REAR_AXLE 280  // 重心距后轴距离,单位mm
-#define CG_HEIGHT 132          // 重心距底盘中心高度,单位mm
+#define CHASSIS_MASS 12.5f       // 机器人整备质量,单位:kg
+#define GRAVITY_ACCEL 9.81f      // 重力加速度,单位:m/s^2
+#define DIST_CG_FRONT_AXLE 0.28f // 重心距前轴距离,单位:m
+#define DIST_CG_REAR_AXLE 0.28f  // 重心距后轴距离,单位:m
+#define CG_HEIGHT 0.132f         // 重心距底盘中心高度,单位:m
 // 底盘跟随就近回中参数
 #define CHASSIS_FOLLOW_ALLOW_FLIP 1 // 是否允许车头翻转(0:不允许, 1:允许)
 #define CHASSIS_FOLLOW_FLIP_THRESHOLD 90.0f // 车头翻转触发阈值(度)
@@ -67,20 +67,20 @@
 // 键盘控制相关参数
 //  键盘按下时的最大目标指令值 (遥控器摇杆最大值为660,
 //  这里可以参考设置或设定的更大)
-#define KEYBOARD_CMD_MAX_SPEED_X 16000.0f
-#define KEYBOARD_CMD_MAX_SPEED_Y 16000.0f
+#define KEYBOARD_CMD_MAX_SPEED_X 2.0f
+#define KEYBOARD_CMD_MAX_SPEED_Y 2.0f
 // 加速度 (单位: 指令值/秒)
 // 值越大, 响应越快。可以从 20000 开始尝试
-#define KEYBOARD_RAMP_ACCEL 12000.0f
+#define KEYBOARD_RAMP_ACCEL 3.0f
 // 兼容旧宏名：键盘速度最大值（如有旧调用）
 #define CHASSIS_KB_MAX_SPEED_X KEYBOARD_CMD_MAX_SPEED_X
 #define CHASSIS_KB_MAX_SPEED_Y KEYBOARD_CMD_MAX_SPEED_Y
 // 减速度 (单位: 指令值/秒)
 // 通常可以设置得比ACCEL大, 实现更快的刹车
-#define KEYBOARD_RAMP_DECEL 15000.0f
+#define KEYBOARD_RAMP_DECEL 4.0f
 // 反向制动减速度 (单位: 指令值/秒)
 // 可以设置得非常大, 实现凌厉的转向和制动
-#define KEYBOARD_RAMP_BRAKE_DECEL 20000.0f
+#define KEYBOARD_RAMP_BRAKE_DECEL 6.0f
 /**
  * @brief M3508电机扭矩到CAN指令值的转换系数,1N·m对应2730.67的CAN指令值
  * @note 根据官方数据：额定扭矩3N·m @ 10A电流, C620电调 -20A~20A 对应
@@ -88,6 +88,48 @@
  * 3N·m = 8192 / 3 ≈ 2730.67
  */
 #define M3508_TORQUE_TO_CURRENT_CMD_COEFF 2730.67f
+
+/* ----------------力控策略相关物理参数---------------- */
+/**
+ * @brief M3508电机转矩常数 (N·m/A)
+ * @note 根据官方参数表：
+ *       - 转矩常数：0.3 N·m/A（输出轴，参数表直接标注）
+ *       - 额定转矩：3 N·m @ 10A → 3/10 = 0.3 ✓ 验证一致
+ *       - 这是输出轴的转矩常数（M3508 P19 一体化设计）
+ *       - 力控公式：I = F × r / Kt（不需要再除减速比）
+ */
+#define M3508_TORQUE_CONSTANT 0.3f
+
+/**
+ * @brief CAN指令值到电流的转换系数 (A per CMD value)
+ * @note C620电调：-20A~20A 对应 -16384~16384，系数 = 20/16384 ≈ 0.00122
+ */
+#define M3508_CMD_TO_CURRENT_COEFF (20.0f / 16384.0f)
+
+/**
+ * @brief 力控策略摩擦补偿参数
+ */
+// 静摩擦补偿电流值 (A)，需要根据实际机器人标定
+#define FRICTION_STATIC_CURRENT 0.5f
+// 动摩擦补偿电流值 (A)，需要根据实际机器人标定
+#define FRICTION_DYNAMIC_CURRENT 0.25f
+// 摩擦补偿速度阈值 (rad/s)，低于此值使用静摩擦补偿
+#define FRICTION_THRESHOLD_OMEGA 75.0f
+// 摩擦补偿连续化窗口 (rad/s)
+#define FRICTION_LINEAR_WINDOW 20.0f
+
+/**
+ * @brief 力控策略控制参数
+ */
+// 最大控制力 (N)
+#define MAX_CONTROL_FORCE 300.0f
+// 最大控制扭矩 (N·m)
+#define MAX_CONTROL_TORQUE 100.0f
+// 单轮最大电流 (A)
+#define MAX_WHEEL_CURRENT 20.0f
+
+// 轮速内环反馈系数 (A·s/rad)，用于力控速度补偿
+#define WHEEL_SPEED_FEEDBACK_COEFF 0.08f
 
 #define GYRO2GIMBAL_DIR_YAW                                                    \
   1 // 陀螺仪数据相较于云台的yaw的方向,1为相同,-1为相反
@@ -244,24 +286,23 @@ typedef struct {
 } Shoot_Upload_Data_s;
 
 /* ----------------系统辨识任务相关定义----------------*/
-// 系统辨识控制指令（云台任务发布，系统辨识任务订阅）
+// 底盘系统辨识控制指令（cmd任务发布，系统辨识任务订阅）
 typedef struct {
-  uint8_t enable;  // 使能标志：1-启动辨识，0-停止辨识
-  float yaw_ref;   // 非辨识轴的参考位置（YAW）
-  float pitch_ref; // 非辨识轴的参考位置（PITCH）
-} SysID_Ctrl_Cmd_s;
+  uint8_t enable;       // 使能标志：1-启动辨识，0-停止辨识
+  uint8_t target_motor; // 目标电机：0-lf, 1-rf, 2-lb, 3-rb
+} Chassis_SysID_Ctrl_Cmd_s;
 
-// 系统辨识反馈数据（系统辨识任务发布，云台任务订阅）
+// 底盘系统辨识反馈数据（系统辨识任务发布，cmd任务订阅）
 typedef struct {
-  float step_input;      // 方波输入信号（电流指令）
-  float motor_output;    // 电机输出反馈（陀螺仪角速度）
+  float step_input;      // 方波输入信号（电流CAN指令值）
+  float motor_output;    // 电机输出反馈（轮速 rad/s）
   float time_elapsed;    // 已运行时间 [s]
   uint8_t is_finished;   // 辨识完成标志
-  uint8_t step_state;    // 当前阶跃状态
+  uint8_t step_state;    // 当前阶跃状态（0-正向，1-反向）
   uint32_t call_counter; // 任务调用次数
   float actual_dt;       // 实际测量的dt [s]
   float task_freq;       // 实际任务频率 [Hz]
-} SysID_Feedback_s;
+} Chassis_SysID_Feedback_s;
 
 #pragma pack() // 开启字节对齐,结束前面的#pragma pack(1)
 
