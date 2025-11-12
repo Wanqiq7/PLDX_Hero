@@ -157,7 +157,7 @@ __attribute__((noreturn)) void StartSYSIDTASK(void const *argument)
     {
         // 1kHz 精确循环
         sysid_start = DWT_GetTimeline_ms();
-        SysIDTask();
+        Gimbal_SysIDTask();
         sysid_dt = DWT_GetTimeline_ms() - sysid_start;
         if (sysid_dt > 1)
             LOGERROR("[freeRTOS] SYSID Task is being DELAY! dt = [%f]", &sysid_dt);

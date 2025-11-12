@@ -246,11 +246,19 @@ typedef struct {
 } Shoot_Upload_Data_s;
 
 /* ----------------系统辨识任务相关定义----------------*/
-// 系统辨识控制指令（云台任务发布，系统辨识任务订阅）
+// 云台系统辨识轴选择枚举
+typedef enum {
+    SYSID_AXIS_YAW = 0,   // 辨识Yaw轴
+    SYSID_AXIS_PITCH = 1, // 辨识Pitch轴
+    SYS_ID_DISABLED_AXIS = 2 // 未选择任何轴
+} SysID_TargetAxis_e;
+
+// 云台系统辨识控制指令（gimbal任务发布，系统辨识任务订阅）
 typedef struct {
-  uint8_t enable;  // 使能标志：1-启动辨识，0-停止辨识
-  float yaw_ref;   // 非辨识轴的参考位置（YAW）
-  float pitch_ref; // 非辨识轴的参考位置（PITCH）
+    uint8_t enable;       // 使能标志：1-启动辨识，0-停止辨识
+    uint8_t axis;         // 目标轴：0-Yaw 1-Pitch
+    float yaw_ref;        // Yaw轴位置参考值（用于保持非辨识轴位置）
+    float pitch_ref;      // Pitch轴位置参考值（用于保持非辨识轴位置）
 } SysID_Ctrl_Cmd_s;
 
 // 系统辨识反馈数据（系统辨识任务发布，云台任务订阅）

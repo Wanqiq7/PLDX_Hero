@@ -12,6 +12,74 @@
 #include "user_lib.h"
 #include <math.h>
 
+/* ============================================================
+ * 系统辨识控制开关（测试时改为1，完成后改为0）
+ * ============================================================ */
+#define ENABLE_GIMBAL_SYSID 0            // 0-关闭，1-启动辨识
+#define SYSID_TARGET_AXIS SYSID_AXIS_YAW // SYSID_AXIS_YAW 或 SYSID_AXIS_PITCH
+
+#if ENABLE_GIMBAL_SYSID
+static Publisher_t *sysid_macro_pub = NULL;
+static uint8_t sysid_macro_done = 0;
+
+/**
+ * @brief 云台系统辨识宏开关触发函数
+ * @note 当ENABLE_GIMBAL_SYSID=1时，上电3秒后自动启动辨识
+ *       辨识运行20秒后自动停止，电机恢复正常控制
+ *       测试完成后，将宏改为0，重新编译即可恢复正常
+ *
+ * 使用说明：
+ *   1. 确保云台可以自由转动
+ *   2. 修改上面的宏：ENABLE_GIMBAL_SYSID = 1
+ *   3. 选择目标轴：SYSID_TARGET_AXIS = SYSID_AXIS_YAW 或 SYSID_AXIS_PITCH
+ *   4. 编译烧录
+ *   5. 配置Ozone记录变量（见文档）
+ *   6. 上电等待3秒 → 自动启动辨识（持续20秒）
+ *   7. 20秒后电机自动停止
+ *   8. Ozone导出CSV，运行MATLAB分析
+ *   9. 测试完成后，改回：ENABLE_GIMBAL_SYSID = 0
+ */
+static void GimbalSystemIDSwitch() {
+  static uint8_t sysid_stop_sent = 0;
+
+  // 第一阶段：启动辨识（上电3秒后）
+  if (!sysid_macro_done && DWT_GetTimeline_s() > 3.0f) {
+    // 首次调用，注册发布者
+    if (sysid_macro_pub == NULL) {
+      sysid_macro_pub =
+          PubRegister("gimbal_sysid_cmd", sizeof(SysID_Ctrl_Cmd_s));
+    }
+
+    // 发布启动指令
+    SysID_Ctrl_Cmd_s sysid_cmd = {
+        .enable = 1,
+        .axis = SYSID_TARGET_AXIS,
+        .yaw_ref = 0.0f,   // 保持零位
+        .pitch_ref = 0.0f, // 保持零位
+    };
+    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+
+    sysid_macro_done = 1; // 标记已触发
+  }
+
+  // 第二阶段：确保停止（上电25秒后，辨识应该已完成）
+  if (sysid_macro_done && !sysid_stop_sent && DWT_GetTimeline_s() > 25.0f) {
+    // 发送停止指令（确保辨识任务退出）
+    SysID_Ctrl_Cmd_s sysid_cmd = {
+        .enable = 0,
+        .axis = SYSID_TARGET_AXIS,
+        .yaw_ref = 0.0f,
+        .pitch_ref = 0.0f,
+    };
+    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+
+    sysid_stop_sent = 1; // 标记已发送停止指令
+    // 注意：电机恢复由sysid_task.c中的逻辑处理
+  }
+}
+#endif
+/* ============================================================ */
+
 /* ==================== 系统辨识任务交互 ==================== */
 // 系统辨识任务通过消息中心与云台任务交互
 static Publisher_t *sysid_pub;  // 系统辨识数据发布者
@@ -26,10 +94,6 @@ static float gimbal_yaw_cur_ff = 0.0f;
 static float gimbal_pitch_cur_ff = 600.0f; // Pitch轴前馈固定值
 
 // 注：不再需要单位转换变量，IMU已经直接输出弧度制数据
-
-/* ==================== 系统辨识相关函数已移至独立任务 ==================== */
-// 系统辨识功能现在由独立的 StartSYSIDTASK 任务执行，见 robot_task.h
-/* ================================================================== */
 
 static Publisher_t *gimbal_pub;  // 云台应用消息发布者(云台反馈cmd)
 static Subscriber_t *gimbal_sub; // cmd控制消息订阅者
@@ -169,11 +233,11 @@ void GimbalInit() {
   gimbal_sub = SubRegister("gimbal_cmd", sizeof(Gimbal_Ctrl_Cmd_s));
 
   // 注册系统辨识消息
-  sysid_pub = PubRegister("sysid_cmd", sizeof(SysID_Ctrl_Cmd_s));
-  sysid_sub = SubRegister("sysid_feedback", sizeof(SysID_Feedback_s));
+  sysid_pub = PubRegister("gimbal_sysid_cmd", sizeof(SysID_Ctrl_Cmd_s));
+  sysid_sub = SubRegister("gimbal_sysid_feedback", sizeof(SysID_Feedback_s));
 
   // 初始化系统辨识任务（传递电机和IMU指针）
-  SysIDTaskInit(yaw_motor, pitch_motor, gimba_IMU_data);
+  Gimbal_SysIDTaskInit(yaw_motor, pitch_motor, gimba_IMU_data);
 
   /* ==================== LQR使用说明 ==================== */
   /* LQR控制器已集成到电机库中，使用非常简单：
@@ -204,6 +268,11 @@ void GimbalInit() {
 
 /* 机器人云台控制核心任务,后续考虑只保留IMU控制,不再需要电机的反馈 */
 void GimbalTask() {
+#if ENABLE_GIMBAL_SYSID
+  // 系统辨识宏开关：上电3秒后自动启动，25秒后自动停止
+  GimbalSystemIDSwitch();
+#endif
+
   // 获取云台控制数据
   // 后续增加没收到数据的处理
   SubGetMessage(gimbal_sub, &gimbal_cmd_recv);
@@ -289,7 +358,8 @@ void GimbalTask() {
 
     // 发布系统辨识所需的控制指令（使能辨识）
     static SysID_Ctrl_Cmd_s sysid_cmd;
-    sysid_cmd.enable = 1; // 启动辨识
+    sysid_cmd.enable = 1;            // 启动辨识
+    sysid_cmd.axis = SYSID_AXIS_YAW; // 默认辨识Yaw轴
     sysid_cmd.yaw_ref = gimbal_cmd_recv.yaw;
     sysid_cmd.pitch_ref = gimbal_cmd_recv.pitch;
     PubPushMessage(sysid_pub, &sysid_cmd);
@@ -302,6 +372,7 @@ void GimbalTask() {
     // 非辨识模式：确保系统辨识任务停止
     static SysID_Ctrl_Cmd_s sysid_cmd;
     sysid_cmd.enable = 0; // 停止辨识
+    sysid_cmd.axis = SYSID_AXIS_YAW;
     sysid_cmd.yaw_ref = gimbal_cmd_recv.yaw;
     sysid_cmd.pitch_ref = gimbal_cmd_recv.pitch;
     PubPushMessage(sysid_pub, &sysid_cmd);
