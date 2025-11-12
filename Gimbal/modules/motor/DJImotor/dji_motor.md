@@ -199,8 +199,8 @@ motor_def.h内包含了一些电机通用的定义。
 
 ```c
 #define DJI_MOTOR_CNT 12
-#define SPEED_SMOOTH_COEF 0.9f    // better to be greater than 0.85
-#define CURRENT_SMOOTH_COEF 0.98f // this coef must be greater than 0.95
+#define SPEED_SMOOTH_COEF 0.90f    // better to be greater than 0.85
+#define CURRENT_SMOOTH_COEF 0.90f // this coef must be greater than 0.95
 
 typedef struct /* DJI电机CAN反馈信息*/
 {

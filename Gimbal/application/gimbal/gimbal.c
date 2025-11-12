@@ -80,8 +80,8 @@ void GimbalInit() {
               .LQR =
                   {
                       // LQR控制器参数（从MATLAB离线计算）
-                      .K_angle = 95.742711f,    // 角度反馈增益 [A/rad]
-                      .K_velocity = 10.653076f, // 角速度反馈增益 [A·s/rad]
+                      .K_angle = 88.602540f,    // 角度反馈增益 [A/rad]
+                      .K_velocity = 14.177862f, // 角速度反馈增益 [A·s/rad]
                       .K_integral = 0.0f,   // 积分增益（Yaw轴一般不需要积分）
                       .max_out = 20.0f,     // 最大电流限制 [A]
                       .enable_integral = 0, // 禁用积分

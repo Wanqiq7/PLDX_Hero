@@ -233,8 +233,18 @@ static void RemoteControlSet() {
     gimbal_cmd_send.gimbal_mode = GIMBAL_GYRO_MODE;
   }
   // 底盘改为左摇杆
-  chassis_cmd_send.vx = 41.3f * (float)rc_data[TEMP].rc.rocker_l_;
-  chassis_cmd_send.vy = 41.3f * (float)rc_data[TEMP].rc.rocker_l1;
+  static float vx_filtered = 0.0f;
+  static float vy_filtered = 0.0f;
+
+  float vx_norm = (float)rc_data[TEMP].rc.rocker_l_ / 660.0f;
+  float vy_norm = (float)rc_data[TEMP].rc.rocker_l1 / 660.0f;
+
+  // ⚠️ 非常轻的滤波，α=0.9，只过滤量化噪声
+  vx_filtered = LowPassFilter_Float(vx_norm, 0.85f, &vx_filtered);
+  vy_filtered = LowPassFilter_Float(vy_norm, 0.85f, &vy_filtered);
+
+  chassis_cmd_send.vx = vx_filtered;
+  chassis_cmd_send.vy = vy_filtered;
 
   // 云台改为右摇杆，添加低通滤波
   static float yaw_increment_filtered = 0.0f;   // 保存上一次的滤波输出
@@ -249,7 +259,7 @@ static void RemoteControlSet() {
 
   // 低通滤波，K=0.15对应约5Hz截止频率（在200Hz采样下）
   yaw_increment =
-      LowPassFilter_Float(yaw_increment, 0.95f, &yaw_increment_filtered);
+      LowPassFilter_Float(yaw_increment, 0.98f, &yaw_increment_filtered);
   pitch_increment =
       LowPassFilter_Float(pitch_increment, 0.95f, &pitch_increment_filtered);
 
