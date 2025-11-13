@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #define HT_MOTOR_CNT 4
-#define CURRENT_SMOOTH_COEF 0.95f
+#define HT_CURRENT_SMOOTH_COEF 0.98f
 #define SPEED_BUFFER_SIZE 5
 #define HT_SPEED_BIAS -0.0109901428f // 电机速度偏差,单位rad/s
 #define TORQUE_COEF_HT 3.5           // 扭矩系数,单位N.m/A

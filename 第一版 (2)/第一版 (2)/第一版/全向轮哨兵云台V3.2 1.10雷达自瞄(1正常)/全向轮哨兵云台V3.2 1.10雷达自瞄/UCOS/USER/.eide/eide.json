@@ -1,0 +1,560 @@
+{
+  "name": "Template",
+  "type": "ARM",
+  "dependenceList": [],
+  "srcDirs": [],
+  "virtualFolder": {
+    "name": "<virtual_root>",
+    "files": [],
+    "folders": [
+      {
+        "name": "USER",
+        "files": [
+          {
+            "path": "main.c"
+          },
+          {
+            "path": "stm32f4xx_it.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOS_TASK",
+        "files": [
+          {
+            "path": "system_stm32f4xx.c"
+          },
+          {
+            "path": "../UCOS_TASK/AppTask.c"
+          },
+          {
+            "path": "../UCOS_TASK/Time1.c"
+          },
+          {
+            "path": "../UCOS_TASK/GimbalTask.c"
+          },
+          {
+            "path": "../UCOS_TASK/ChassisTask.c"
+          },
+          {
+            "path": "../UCOS_TASK/RC_Protection.c"
+          },
+          {
+            "path": "../UCOS_TASK/State_Test.c"
+          },
+          {
+            "path": "../UCOS_TASK/FlickTask.c"
+          },
+          {
+            "path": "../UCOS_TASK/FW_Keep.c"
+          },
+          {
+            "path": "../UCOS_TASK/Can_Task.c"
+          },
+          {
+            "path": "../UCOS_TASK/Referee_System.c"
+          },
+          {
+            "path": "../UCOS_TASK/Base_Control.c"
+          },
+          {
+            "path": "../UCOS_TASK/Ros_Control_Task.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "HARDWARE",
+        "files": [
+          {
+            "path": "../HARDWARE/LED/led.c"
+          },
+          {
+            "path": "../HARDWARE/Bsp_Init.c"
+          },
+          {
+            "path": "../HARDWARE/bsp_key.c"
+          },
+          {
+            "path": "../HARDWARE/pwm.c"
+          },
+          {
+            "path": "../HARDWARE/timer.c"
+          },
+          {
+            "path": "../HARDWARE/can1.c"
+          },
+          {
+            "path": "../HARDWARE/can2.c"
+          },
+          {
+            "path": "../HARDWARE/iwdg.c"
+          },
+          {
+            "path": "../HARDWARE/TIM7_FPS.c"
+          },
+          {
+            "path": "../HARDWARE/spi.c"
+          },
+          {
+            "path": "../HARDWARE/light_short.c"
+          },
+          {
+            "path": "../HARDWARE/buzzer.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "CORE",
+        "files": [
+          {
+            "path": "../CORE/core_cm4.h"
+          },
+          {
+            "path": "../CORE/core_cm4_simd.h"
+          },
+          {
+            "path": "../CORE/startup_stm32f40_41xxx.s"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "FWLIB",
+        "files": [
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/misc.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_gpio.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_rcc.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_syscfg.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_usart.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_dma.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_tim.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_can.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/inc/arm_math.h"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_iwdg.c"
+          },
+          {
+            "path": "../FWLIB/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_spi.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "SYSTEM",
+        "files": [
+          {
+            "path": "../SYSTEM/delay/delay.c"
+          },
+          {
+            "path": "../SYSTEM/sys/sys.c"
+          },
+          {
+            "path": "../SYSTEM/usart/usart.c"
+          },
+          {
+            "path": "../SYSTEM/usart/usart2.c"
+          },
+          {
+            "path": "../SYSTEM/usart/usart6.c"
+          },
+          {
+            "path": "../SYSTEM/usart/usart3_rc.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_BSP",
+        "files": [
+          {
+            "path": "../UCOSIII/UCOS_BSP/bsp.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_CPU",
+        "files": [
+          {
+            "path": "../UCOSIII/uC-CPU/ARM-Cortex-M4/RealView/cpu_c.c"
+          },
+          {
+            "path": "../UCOSIII/uC-CPU/cpu_core.c"
+          },
+          {
+            "path": "../UCOSIII/uC-CPU/ARM-Cortex-M4/RealView/cpu_a.asm"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_LIB",
+        "files": [
+          {
+            "path": "../UCOSIII/uC-LIB/lib_ascii.c"
+          },
+          {
+            "path": "../UCOSIII/uC-LIB/lib_math.c"
+          },
+          {
+            "path": "../UCOSIII/uC-LIB/lib_mem.c"
+          },
+          {
+            "path": "../UCOSIII/uC-LIB/lib_str.c"
+          },
+          {
+            "path": "../UCOSIII/uC-LIB/Ports/ARM-Cortex-M4/RealView/lib_mem_a.asm"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_CORE",
+        "files": [
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_cfg_app.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_core.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_dbg.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_flag.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_int.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_mem.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_msg.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_mutex.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_pend_multi.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_prio.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_q.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_sem.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_stat.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_task.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_tick.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_time.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_tmr.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Source/os_var.c"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_PORT",
+        "files": [
+          {
+            "path": "../UCOSIII/uCOS-III/Ports/ARM-Cortex-M4/Generic/RealView/os_cpu.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Ports/ARM-Cortex-M4/Generic/RealView/os_cpu_c.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS-III/Ports/ARM-Cortex-M4/Generic/RealView/os_cpu_a.asm"
+          }
+        ],
+        "folders": []
+      },
+      {
+        "name": "UCOSIII_CONFIG",
+        "files": [
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/app_cfg.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/cpu_cfg.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/includes.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/lib_cfg.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/os_app_hooks.c"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/os_app_hooks.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/os_cfg.h"
+          },
+          {
+            "path": "../UCOSIII/uCOS_CONFIG/os_cfg_app.h"
+          }
+        ],
+        "folders": []
+      }
+    ]
+  },
+  "outDir": "build",
+  "deviceName": null,
+  "packDir": null,
+  "miscInfo": {
+    "uid": "d58c2f8bc7abbdaec926ce657470f7ad"
+  },
+  "targets": {
+    "Template": {
+      "excludeList": [],
+      "toolchain": "AC5",
+      "compileConfig": {
+        "cpuType": "Cortex-M4",
+        "floatingPointHardware": "single",
+        "scatterFilePath": "",
+        "useCustomScatterFile": false,
+        "storageLayout": {
+          "RAM": [
+            {
+              "tag": "RAM",
+              "id": 1,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "noInit": false
+            },
+            {
+              "tag": "RAM",
+              "id": 2,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "noInit": false
+            },
+            {
+              "tag": "RAM",
+              "id": 3,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "noInit": false
+            },
+            {
+              "tag": "IRAM",
+              "id": 1,
+              "mem": {
+                "startAddr": "0x20000000",
+                "size": "0x20000"
+              },
+              "isChecked": true,
+              "noInit": false
+            },
+            {
+              "tag": "IRAM",
+              "id": 2,
+              "mem": {
+                "startAddr": "0x10000000",
+                "size": "0x10000"
+              },
+              "isChecked": true,
+              "noInit": false
+            }
+          ],
+          "ROM": [
+            {
+              "tag": "ROM",
+              "id": 1,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "isStartup": false
+            },
+            {
+              "tag": "ROM",
+              "id": 2,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "isStartup": false
+            },
+            {
+              "tag": "ROM",
+              "id": 3,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "isStartup": false
+            },
+            {
+              "tag": "IROM",
+              "id": 1,
+              "mem": {
+                "startAddr": "0x8000000",
+                "size": "0x100000"
+              },
+              "isChecked": true,
+              "isStartup": true
+            },
+            {
+              "tag": "IROM",
+              "id": 2,
+              "mem": {
+                "startAddr": "0x0",
+                "size": "0x0"
+              },
+              "isChecked": false,
+              "isStartup": false
+            }
+          ]
+        },
+        "options": "null"
+      },
+      "uploader": "STLink",
+      "uploadConfig": {
+        "bin": "",
+        "proType": "SWD",
+        "resetMode": "default",
+        "runAfterProgram": true,
+        "speed": 4000,
+        "address": "0x8000000",
+        "elFile": "None",
+        "optionBytes": ".eide/template.st.option.bytes.ini",
+        "otherCmds": ""
+      },
+      "uploadConfigMap": {
+        "JLink": {
+          "bin": "",
+          "baseAddr": "",
+          "cpuInfo": {
+            "vendor": "null",
+            "cpuName": "null"
+          },
+          "proType": 1,
+          "speed": 8000,
+          "otherCmds": ""
+        }
+      },
+      "custom_dep": {
+        "name": "default",
+        "incList": [
+          "../CORE",
+          "../SYSTEM/delay",
+          "../SYSTEM/sys",
+          "../SYSTEM/usart",
+          "../FWLIB/STM32F4xx_StdPeriph_Driver/inc",
+          ".",
+          "../HARDWARE/LED",
+          "../UCOSIII/uC-CPU",
+          "../UCOSIII/uC-LIB",
+          "../UCOSIII/uCOS-III",
+          "../UCOSIII/UCOS_BSP",
+          "../UCOSIII/uCOS_CONFIG",
+          "../UCOSIII/uCOS-III/Source",
+          "../UCOSIII/uC-CPU/ARM-Cortex-M4/RealView",
+          "../UCOSIII/uC-LIB/Ports/ARM-Cortex-M4/RealView",
+          "../UCOSIII/uCOS-III/Ports/ARM-Cortex-M4/Generic/RealView",
+          "../UCOS_TASK",
+          "../HARDWARE",
+          "../BMI08x-Sensor-API-master",
+          "../BMI08x-Sensor-API-master/examples/read_synchronized_data_mcu",
+          "../BMI08x-Sensor-API-master/examples/read_sensor_data",
+          "../BMI08x-Sensor-API-master/examples/polling_streaming_pc",
+          "../BMI08x-Sensor-API-master/examples/interrupt_streaming_pc",
+          "../BMI08x-Sensor-API-master/examples/gyro_fifo_watermark",
+          "../BMI08x-Sensor-API-master/examples/gyro_fifo_full",
+          "../BMI08x-Sensor-API-master/examples/common",
+          "../BMI08x-Sensor-API-master/examples/accel_fifo_watermark",
+          "../BMI08x-Sensor-API-master/examples/accel_fifo_full",
+          "../bmi088-master",
+          "../bmi088-master/inc",
+          "../bmi088-master/docs",
+          "RTE/_Template"
+        ],
+        "libList": [],
+        "defineList": [
+          "STM32F40_41xxx",
+          "USE_STDPERIPH_DRIVER",
+          "__FPU_USED=1",
+          "__CC_ARM=1"
+        ]
+      },
+      "builderOptions": {
+        "AC5": {
+          "version": 4,
+          "beforeBuildTasks": [],
+          "afterBuildTasks": [],
+          "global": {
+            "use-microLIB": false,
+            "output-debug-info": "enable"
+          },
+          "c/cpp-compiler": {
+            "optimization": "level-0",
+            "one-elf-section-per-function": true,
+            "c99-mode": true,
+            "C_FLAGS": "--diag_suppress=1 --diag_suppress=1295",
+            "CXX_FLAGS": "--diag_suppress=1 --diag_suppress=1295",
+            "warnings": "unspecified"
+          },
+          "asm-compiler": {},
+          "linker": {
+            "output-format": "elf",
+            "xo-base": "",
+            "ro-base": "0x08000000",
+            "rw-base": "0x20000000"
+          }
+        }
+      }
+    }
+  },
+  "version": "3.5"
+}

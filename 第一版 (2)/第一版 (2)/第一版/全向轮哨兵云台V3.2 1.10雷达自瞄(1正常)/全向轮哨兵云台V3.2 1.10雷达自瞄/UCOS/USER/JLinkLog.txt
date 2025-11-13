@@ -1,0 +1,91 @@
+T8C24 000:008.263   SEGGER J-Link V7.98c Log File
+T8C24 000:008.406   DLL Compiled: Aug  7 2024 15:37:06
+T8C24 000:008.436   Logging started @ 2025-10-22 13:51
+T8C24 000:008.466   Process: E:\Keil_v5\UV4\UV4.exe
+T8C24 000:008.498 - 8.494ms
+T8C24 000:008.534 JLINK_SetWarnOutHandler(...)
+T8C24 000:008.563 - 0.030ms
+T8C24 000:008.595 JLINK_OpenEx(...)
+T8C24 000:010.278   Firmware: J-Link V9 compiled May  7 2021 16:26:12
+T8C24 000:010.846   Firmware: J-Link V9 compiled May  7 2021 16:26:12
+T8C24 000:010.979   Decompressing FW timestamp took 88 us
+T8C24 000:017.224   Hardware: V9.70
+T8C24 000:017.303   S/N: 602712503
+T8C24 000:017.350   OEM: SEGGER
+T8C24 000:017.397   Feature(s): GDB, RDI, FlashBP, FlashDL, JFlash
+T8C24 000:018.052   Bootloader: (Could not read)
+T8C24 000:018.815   TELNET listener socket opened on port 19021
+T8C24 000:018.968   WEBSRV WEBSRV_Init(): Starting webserver thread(s)
+T8C24 000:019.237   WEBSRV Webserver running on local port 19080
+T8C24 000:019.432   Looking for J-Link GUI Server exe at: E:\Keil_v5\ARM\Segger\JLinkGUIServer.exe
+T8C24 000:019.764   Looking for J-Link GUI Server exe at: C:\Program Files (x86)\SEGGER\JLink_V722b\JLinkGUIServer.exe
+T8C24 000:019.935   Forking J-Link GUI Server: C:\Program Files (x86)\SEGGER\JLink_V722b\JLinkGUIServer.exe
+T8C24 000:025.569   J-Link GUI Server info: "J-Link GUI server V7.22b "
+T8C24 000:025.997   J-Link GUI Server: Connection breakdown.
+T8C24 000:026.145 - 17.544ms returns "O.K."
+T8C24 000:026.192 JLINK_GetEmuCaps()
+T8C24 000:026.228 - 0.033ms returns 0xB9FF7BBF
+T8C24 000:026.264 JLINK_TIF_GetAvailable(...)
+T8C24 000:026.499 - 0.234ms
+T8C24 000:026.569 JLINK_SetErrorOutHandler(...)
+T8C24 000:026.605 - 0.035ms
+T8C24 000:026.669 JLINK_ExecCommand("ProjectFile = "D:\RM\第一版\全向轮哨兵云台V3.2 1.10雷达自瞄(1正常)\全向轮哨兵云台V3.2 1.10雷达自瞄\UCOS\USER\JLinkSettings.ini"", ...). 
+T8C24 000:038.696 - 12.029ms returns 0x00
+T8C24 000:042.415 JLINK_ExecCommand("Device = STM32F407IG", ...). 
+T8C24 000:046.252   Device "STM32F407IG" selected.
+T8C24 000:046.602 - 4.143ms returns 0x00
+T8C24 000:046.628 JLINK_ExecCommand("DisableConnectionTimeout", ...). 
+T8C24 000:046.650   ERROR: Unknown command
+T8C24 000:046.680 - 0.030ms returns 0x01
+T8C24 000:046.700 JLINK_GetHardwareVersion()
+T8C24 000:046.722 - 0.019ms returns 97000
+T8C24 000:046.759 JLINK_GetDLLVersion()
+T8C24 000:046.779 - 0.019ms returns 79803
+T8C24 000:046.799 JLINK_GetOEMString(...)
+T8C24 000:046.819 JLINK_GetFirmwareString(...)
+T8C24 000:046.839 - 0.019ms
+T8C24 000:053.438 JLINK_GetDLLVersion()
+T8C24 000:053.481 - 0.043ms returns 79803
+T8C24 000:053.506 JLINK_GetCompileDateTime()
+T8C24 000:053.529 - 0.023ms
+T8C24 000:055.485 JLINK_GetFirmwareString(...)
+T8C24 000:055.530 - 0.045ms
+T8C24 000:057.505 JLINK_GetHardwareVersion()
+T8C24 000:057.543 - 0.037ms returns 97000
+T8C24 000:059.657 JLINK_GetSN()
+T8C24 000:059.699 - 0.042ms returns 602712503
+T8C24 000:061.612 JLINK_GetOEMString(...)
+T8C24 000:065.150 JLINK_TIF_Select(JLINKARM_TIF_JTAG)
+T8C24 000:066.101 - 0.950ms returns 0x00
+T8C24 000:066.144 JLINK_HasError()
+T8C24 000:066.174 JLINK_SetSpeed(5000)
+T8C24 000:066.280 - 0.107ms
+T8C24 000:066.306 JLINK_GetIdData(pIdData)
+T8C24 000:068.364   InitTarget() start
+T8C24 000:068.417    J-Link Script File: Executing InitTarget()
+T8C24 000:070.376   JTAG selected. Identifying JTAG Chain...
+T8C24 000:073.307   TotalIRLen = ?, IRPrint = 0x..000000000000000000000000
+T8C24 000:075.632   Error: Scanning JTAG chain failed.
+T8C24 000:077.734   Can not attach to CPU. Trying connect under reset.
+T8C24 000:140.340   JTAG selected. Identifying JTAG Chain...
+T8C24 000:148.289   TotalIRLen = ?, IRPrint = 0x..000000000000000000000000
+T8C24 000:153.733   Error: Scanning JTAG chain failed.
+T8C24 000:159.517   Connecting to CPU via connect under reset failed.
+T8C24 000:217.191   InitTarget() end - Took 141ms
+T8C24 000:222.011   Connect failed. Resetting via Reset pin and trying again.
+T8C24 000:286.364   InitTarget() start
+T8C24 000:286.426    J-Link Script File: Executing InitTarget()
+T8C24 000:289.139   JTAG selected. Identifying JTAG Chain...
+T8C24 000:292.104   Could not measure total IR len. TDO is constant high.
+T8C24 000:300.905   Error: Scanning JTAG chain failed.
+T8C24 000:324.755   Can not attach to CPU. Trying connect under reset.
+T8C24 000:378.846   JTAG selected. Identifying JTAG Chain...
+T8C24 000:382.079   Could not measure total IR len. TDO is constant high.
+T8C24 000:385.178   Error: Scanning JTAG chain failed.
+T8C24 000:387.423   Connecting to CPU via connect under reset failed.
+T8C24 000:444.768   InitTarget() end - Took 151ms
+T8C24 000:444.933 - 378.627ms
+T8C24 005:070.299 JLINK_Close()
+T8C24 005:082.590 - 12.289ms
+T8C24 005:082.672   
+T8C24 005:082.712   Closed

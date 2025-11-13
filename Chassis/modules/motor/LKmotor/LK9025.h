@@ -11,8 +11,8 @@
 
 #define I_MIN -2000
 #define I_MAX 2000
-#define CURRENT_SMOOTH_COEF 0.95f
-#define SPEED_SMOOTH_COEF 0.95f
+#define LK_CURRENT_SMOOTH_COEF 0.90f
+#define LK_SPEED_SMOOTH_COEF 0.90f
 #define REDUCTION_RATIO_DRIVEN 1
 #define ECD_ANGLE_COEF_LK (360.0f / 65536.0f)
 #define CURRENT_TORQUE_COEF_LK                                                 \

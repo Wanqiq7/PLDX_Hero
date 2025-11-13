@@ -112,9 +112,9 @@
 // 静摩擦补偿电流值 (A)，需要根据实际机器人标定
 #define FRICTION_STATIC_CURRENT 0.5f
 // 动摩擦补偿电流值 (A)，需要根据实际机器人标定
-#define FRICTION_DYNAMIC_CURRENT 0.25f
+#define FRICTION_DYNAMIC_CURRENT 0.35f
 // 摩擦补偿速度阈值 (rad/s)，低于此值使用静摩擦补偿
-#define FRICTION_THRESHOLD_OMEGA 75.0f
+#define FRICTION_THRESHOLD_OMEGA 8.0f
 // 摩擦补偿连续化窗口 (rad/s)
 #define FRICTION_LINEAR_WINDOW 20.0f
 
