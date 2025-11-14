@@ -4,6 +4,7 @@
 #include "controller.h"
 #include "dji_motor.h"
 #include "general_def.h"
+#include "math.h"
 #include "message_center.h"
 #include "power_controller.h"
 #include "referee_UI.h"
@@ -275,16 +276,16 @@ void ChassisInit() {
   };
   PIDInit(&chassis_force_y_pid, &force_y_pid_config);
 
-  // 旋转扭矩PID初始化 (输出单位: N·m)
+  // 旋转扭矩PID初始化 (输出单位: N·m) - 优化参数减少振荡
   PID_Init_Config_s torque_pid_config = {
-      .Kp = 8.0f,             // 比例增益 [N·m/(rad/s)]
+      .Kp = 1.5f,             // 比例增益 [N·m/(rad/s)] - 从2.5降至1.5减少过冲
       .Ki = 0.0f,             // 积分增益 [N·m/rad]
-      .Kd = 0.0f,             // 微分增益 [N·m·s/rad]
+      .Kd = 0.1f,             // 微分增益 [N·m·s/rad] - 增加阻尼抑制振荡
       .IntegralLimit = 50.0f, // 积分限幅 [N·m]
       .MaxOut = 5.0f,
-      .DeadBand = 0.1f, // 死区 [rad/s]
-      .Improve = PID_Integral_Limit | PID_Derivative_On_Measurement |
-                 PID_DerivativeFilter,
+      .DeadBand = 0.15f, // 死区 [rad/s]
+      .Output_LPF_RC = 0.00087f,
+      .Improve = PID_OutputFilter | PID_Derivative_On_Measurement,
   };
   PIDInit(&chassis_torque_pid, &torque_pid_config);
 
@@ -447,41 +448,35 @@ static void VelocityToForceControl() {
 }
 /**
  * @brief 力的动力学逆解算（力控核心环节2）
- * @note  将底盘合力分配到各个轮子，参考robowalker的Dynamics_Inverse_Resolution
+ * @note  将底盘合力分配到各个轮子，使用独立轮距力臂（修复振荡问题）
+ *       修复：使用各轮独立力臂而非统一rotation_radius，与正解算保持一致
  */
 static void ForceDynamicsInverseResolution() {
-  // 麦轮力分配（参考robowalker思想）
+  // 麦轮力分配（参考robowalker思想，修正为独立轮距）
   // 对于麦轮，每个轮子受到的力 = 平移力分量 + 旋转力矩分量
-  // 计算旋转半径（单位：m）
-  // ⭐ WHEEL_BASE和TRACK_WIDTH在robot_def.h中已经是m，直接计算即可
-  float rotation_radius = sqrtf(HALF_WHEEL_BASE * HALF_WHEEL_BASE +
-                                HALF_TRACK_WIDTH * HALF_TRACK_WIDTH);
+  // ⭐ 修复：必须使用与正解算一致的独立轮距力臂，避免参数不匹配导致振荡
 
-  // 力分配矩阵（麦轮45度辊子配置）
-  // wheel_force[i] = f_x * cos(angle) + f_y * sin(angle) + torque / r *
-  // sin(wheel_angle) ⭐ 修正：符号必须与正解算中的wz符号一致！
+  // 力分配矩阵（麦轮45度辊子配置）- 修正：使用独立轮距力臂
+  // wheel_force[i] = f_x * cos(angle) + f_y * sin(angle) + torque /
+  // r_individual ⭐ 关键修正：符号和力臂必须与正解算中的wz符号一致！
   //
   // 正解算符号参考（333-337行）：
-  // vt_lf = ... + wz * LF_CENTER   → +wz
-  // vt_rf = ... - wz * RF_CENTER   → -wz
-  // vt_lb = ... - wz * LB_CENTER   → -wz
-  // vt_rb = ... + wz * RB_CENTER   → +wz
+  // vt_lf = ... + wz * LF_CENTER   → +wz，使用LF_CENTER力臂
+  // vt_rf = ... - wz * RF_CENTER   → -wz，使用RF_CENTER力臂
+  // vt_lb = ... - wz * LB_CENTER   → -wz，使用LB_CENTER力臂
+  // vt_rb = ... + wz * RB_CENTER   → +wz，使用RB_CENTER力臂
 
-  // 左前轮 (45度配置) → +wz
-  wheel_force[0] =
-      (-force_x - force_y) / 4.0f + torque_z / (4.0f * rotation_radius);
+  // 左前轮 (45度配置) → +wz，使用LF_CENTER独立力臂
+  wheel_force[0] = (-force_x - force_y) / 4.0f + torque_z / (4.0f * LF_CENTER);
 
-  // 右前轮 → -wz
-  wheel_force[1] =
-      (-force_x + force_y) / 4.0f - torque_z / (4.0f * rotation_radius);
+  // 右前轮 → -wz，使用RF_CENTER独立力臂
+  wheel_force[1] = (-force_x + force_y) / 4.0f - torque_z / (4.0f * RF_CENTER);
 
-  // 左后轮 → -wz
-  wheel_force[2] =
-      (force_x - force_y) / 4.0f - torque_z / (4.0f * rotation_radius);
+  // 左后轮 → -wz，使用LB_CENTER独立力臂
+  wheel_force[2] = (force_x - force_y) / 4.0f - torque_z / (4.0f * LB_CENTER);
 
-  // 右后轮 → +wz
-  wheel_force[3] =
-      (force_x + force_y) / 4.0f + torque_z / (4.0f * rotation_radius);
+  // 右后轮 → +wz，使用RB_CENTER独立力臂
+  wheel_force[3] = (force_x + force_y) / 4.0f + torque_z / (4.0f * RB_CENTER);
 }
 
 /**
@@ -509,6 +504,12 @@ static void ForceToCurrentConversion() {
     float speed_feedback = 0.0f;
     float omega_error = target_omega - actual_omega;
 
+    // 二级速度误差滤波，减少噪声放大
+    static float filtered_omega_error[4] = {0.0f}; // 每个轮子独立滤波状态
+    const float OMEGA_ERROR_LPF_ALPHA = 0.85f;     // 二级滤波系数
+    omega_error = LowPassFilter_Float(omega_error, OMEGA_ERROR_LPF_ALPHA,
+                                      &filtered_omega_error[i]);
+
     // 过零保护逻辑...
     const float OMEGA_THRESHOLD = 15.0f;
     if (fabsf(target_omega) < OMEGA_THRESHOLD &&
@@ -520,16 +521,11 @@ static void ForceToCurrentConversion() {
       speed_feedback = WHEEL_SPEED_FEEDBACK_COEFF * omega_error;
     }
 
-    // 3. 摩擦补偿
+    // 3. 摩擦补偿 - 使用平滑tanh函数消除阶跃不连续性
     float friction_comp = 0.0f;
-    if (target_omega > FRICTION_THRESHOLD_OMEGA) {
-      friction_comp = FRICTION_DYNAMIC_CURRENT;
-    } else if (target_omega < -FRICTION_THRESHOLD_OMEGA) {
-      friction_comp = -FRICTION_DYNAMIC_CURRENT;
-    } else {
-      friction_comp =
-          target_omega / FRICTION_THRESHOLD_OMEGA * FRICTION_DYNAMIC_CURRENT;
-    }
+    // 使用tanh函数实现平滑过渡，避免零速度处的阶跃
+    float smooth_factor = tanhf(target_omega / FRICTION_THRESHOLD_OMEGA);
+    friction_comp = smooth_factor * FRICTION_DYNAMIC_CURRENT;
 
     // 4. 总电流
     wheel_current[i] = base_current + speed_feedback + friction_comp;
