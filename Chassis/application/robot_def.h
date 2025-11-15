@@ -110,17 +110,10 @@
  * @brief 力控策略摩擦补偿参数
  */
 // 静摩擦补偿电流值 (A)，需要根据实际机器人标定
-#define FRICTION_STATIC_CURRENT 0.5f
+#define FRICTION_STATIC_CURRENT 0.75f
 // 动摩擦补偿电流值 (A)，需要根据实际机器人标定
-#define FRICTION_DYNAMIC_CURRENT 0.35f
-// 摩擦补偿速度阈值 (rad/s)，低于此值使用静摩擦补偿
-#define FRICTION_THRESHOLD_OMEGA 8.0f
-// 摩擦补偿连续化窗口 (rad/s)
-#define FRICTION_LINEAR_WINDOW 20.0f
+#define FRICTION_DYNAMIC_CURRENT 0.5f
 
-/**
- * @brief 力控策略控制参数
- */
 // 最大控制力 (N)
 #define MAX_CONTROL_FORCE 300.0f
 // 最大控制扭矩 (N·m)
@@ -128,8 +121,44 @@
 // 单轮最大电流 (A)
 #define MAX_WHEEL_CURRENT 20.0f
 
-// 轮速内环反馈系数 (A·s/rad)，用于力控速度补偿
-#define WHEEL_SPEED_FEEDBACK_COEFF 0.08f
+/* ----------------底盘运行时配置结构体---------------- */
+/**
+ * @brief 底盘遥控器控制配置
+ */
+typedef struct {
+  float max_linear_speed;  // m/s - 最大线速度
+  float max_angular_speed; // rad/s - 最大角速度
+} Chassis_RC_Config_t;
+
+/**
+ * @brief 底盘力控策略配置
+ */
+typedef struct {
+  float torque_feedforward_coeff;   // N·m/(rad/s) - 扭矩前馈系数
+  float friction_threshold_omega;   // rad/s - 摩擦补偿速度阈值
+  float wheel_speed_feedback_coeff; // A·s/rad - 轮速反馈系数
+  float omega_error_lpf_alpha;      // 角速度误差滤波系数
+  float omega_threshold;            // rad/s - 过零保护角速度阈值
+} Chassis_Force_Control_Config_t;
+
+/**
+ * @brief 底盘运动学配置
+ */
+typedef struct {
+  float velocity_lpf_alpha; // 速度估算滤波系数
+  float speed_deadband;     // 速度死区阈值 (deg/s)
+  float follow_lpf_alpha;   // 跟随模式滤波系数
+  float rotate_speed;       // 小陀螺模式旋转速度 (rad/s)
+} Chassis_Kinematics_Config_t;
+
+/**
+ * @brief 底盘完整配置集合
+ */
+typedef struct {
+  Chassis_RC_Config_t rc;                 // 遥控器配置
+  Chassis_Force_Control_Config_t force;   // 力控配置
+  Chassis_Kinematics_Config_t kinematics; // 运动学配置
+} Chassis_Runtime_Config_t;
 
 #define GYRO2GIMBAL_DIR_YAW                                                    \
   1 // 陀螺仪数据相较于云台的yaw的方向,1为相同,-1为相反
