@@ -21,10 +21,9 @@
 
 #include "arm_math.h"
 #include "bsp_dwt.h"
+#include "controller.h"
 #include "general_def.h"
 #include "referee_UI.h"
-#include "controller.h"
-
 
 /* 根据robot_def.h中的macro自动计算的参数 */
 #define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)     // 半轴距
@@ -63,7 +62,7 @@ static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb,
     *motor_rb; // left right forward back
 
 static PIDInstance chassis_follow_pid; // 底盘跟随云台PID控制器
-static float last_follow_wz = 0.0f;   // 记录上一次跟随模式的wz输出，用于一阶滤波
+static float last_follow_wz = 0.0f; // 记录上一次跟随模式的wz输出，用于一阶滤波
 
 /* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
 static float chassis_vx, chassis_vy;     // 将云台系的速度投影到底盘
@@ -137,22 +136,22 @@ void ChassisInit() {
   //  当前还没有设置电机的正反转,仍然需要手动添加reference的正负号,需要电机module的支持,待修改.
   chassis_motor_config.can_init_config.tx_id = 2;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_REVERSE;  // 修改：左前电机反转
+      MOTOR_DIRECTION_REVERSE; // 修改：左前电机反转
   motor_lf = DJIMotorInit(&chassis_motor_config);
 
   chassis_motor_config.can_init_config.tx_id = 3;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_REVERSE;  // 修改：右前电机反转
+      MOTOR_DIRECTION_REVERSE; // 修改：右前电机反转
   motor_rf = DJIMotorInit(&chassis_motor_config);
 
   chassis_motor_config.can_init_config.tx_id = 1;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_NORMAL;  // 保持：左后电机正常
+      MOTOR_DIRECTION_NORMAL; // 保持：左后电机正常
   motor_lb = DJIMotorInit(&chassis_motor_config);
 
   chassis_motor_config.can_init_config.tx_id = 4;
   chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_NORMAL;  // 保持：右后电机正常
+      MOTOR_DIRECTION_NORMAL; // 保持：右后电机正常
   motor_rb = DJIMotorInit(&chassis_motor_config);
 
   referee_data = UITaskInit(&huart6, &ui_data); // 裁判系统初始化,会同时初始化UI
@@ -189,16 +188,15 @@ void ChassisInit() {
 
   // 底盘跟随云台PID控制器初始化
   PID_Init_Config_s follow_pid_config = {
-      .Kp = 1.5f,  // 比例系数,根据实际调试
-      .Ki = 0.0f,  // 积分系数,一般不需要积分
-      .Kd = 0.0f,  // 微分系数
-      .IntegralLimit = 1000.0f,  // 积分限幅
-      .MaxOut = 8000.0f,  // 最大输出(底盘旋转速度限制)
-      .DeadBand = 0.5f,   // 死区,小于0.5度不控制
-      .Improve = PID_Integral_Limit,  // 启用积分限幅
+      .Kp = 1.5f,                    // 比例系数,根据实际调试
+      .Ki = 0.0f,                    // 积分系数,一般不需要积分
+      .Kd = 0.0f,                    // 微分系数
+      .IntegralLimit = 1000.0f,      // 积分限幅
+      .MaxOut = 8000.0f,             // 最大输出(底盘旋转速度限制)
+      .DeadBand = 0.5f,              // 死区,小于0.5度不控制
+      .Improve = PID_Integral_Limit, // 启用积分限幅
   };
   PIDInit(&chassis_follow_pid, &follow_pid_config);
-
 }
 
 #define LF_CENTER                                                              \
@@ -424,7 +422,6 @@ void ChassisTask() {
   chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chasiss_can_comm);
 #endif // CHASSIS_BOARD
 
-
   if (chassis_cmd_recv.chassis_mode ==
       CHASSIS_ZERO_FORCE) { // 如果出现重要模块离线或遥控器设置为急停,让电机停止
     DJIMotorStop(motor_lf);
@@ -442,15 +439,15 @@ void ChassisTask() {
   switch (chassis_cmd_recv.chassis_mode) {
   case CHASSIS_NO_FOLLOW: // 底盘不旋转,但维持全向机动,一般用于调整云台姿态
     chassis_cmd_recv.wz = 0;
-    last_follow_wz = 0;  // 重置滤波状态
+    last_follow_wz = 0; // 重置滤波状态
     break;
-    
+
   case CHASSIS_FOLLOW_GIMBAL_YAW: { // 跟随云台,使用PID控制+就近回中优化(支持车头翻转)
     // 使用PID控制器计算控制量
     // 期望值为0(对齐),反馈值为near_center_error(经过翻转优化的误差)
     // 输出为底盘旋转角速度,负号是因为角度偏差和底盘旋转方向相反
-    float pid_output = 
-        -PIDCalculate(&chassis_follow_pid, chassis_cmd_recv.near_center_error, 0.0f);
+    float pid_output = -PIDCalculate(&chassis_follow_pid,
+                                     chassis_cmd_recv.near_center_error, 0.0f);
 
     // 使用一阶低通滤波器平滑过渡,避免突变
     // K值说明：K越小滤波越强(保持原有运动状态更多)，K越大响应越快
@@ -465,9 +462,9 @@ void ChassisTask() {
 
   case CHASSIS_ROTATE: // 自旋,同时保持全向机动;当前wz维持定值,后续增加不规则的变速策略
     chassis_cmd_recv.wz = 1500;
-    last_follow_wz = chassis_cmd_recv.wz;  // 保存当前wz,便于切换后平滑过渡
+    last_follow_wz = chassis_cmd_recv.wz; // 保存当前wz,便于切换后平滑过渡
     break;
-    
+
   default:
     break;
   }

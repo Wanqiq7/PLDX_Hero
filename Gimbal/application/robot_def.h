@@ -23,8 +23,9 @@
 // #define CHASSIS_BOARD // 底盘板
 #define GIMBAL_BOARD // 云台板
 
-#define VISION_USE_VCP // 使用虚拟串口发送视觉数据
-// #define VISION_USE_UART // 使用串口发送视觉数据
+#define VISION_USE_CAN // 使用CAN总线接收视觉数据
+// #define VISION_USE_VCP // 使用虚拟串口发送视觉数据（已废弃）
+// #define VISION_USE_UART // 使用串口发送视觉数据（已废弃）
 
 /* 机器人重要参数定义,注意根据不同机器人进行修改,浮点数需要以.0或f结尾,无符号以u结尾
  */
@@ -167,6 +168,14 @@ typedef enum {
   LOAD_BURSTFIRE, // 连发
 } loader_mode_e;
 
+// 视觉控制模式设置
+typedef enum {
+  VISION_MODE_OFF = 0,    // 视觉关闭
+  VISION_MODE_AUTO_AIM,   // 自动瞄准
+  VISION_MODE_ENERGY_HIT, // 能量机关
+  VISION_MODE_MANUAL_AIM, // 手动辅助瞄准
+} vision_mode_e;
+
 // 功率限制,从裁判系统获取,是否有必要保留?
 typedef struct { // 功率控制
   float chassis_power_mx;
@@ -213,6 +222,14 @@ typedef struct {
   float shoot_rate; // 连续发射的射频,unit per s,发/秒
 } Shoot_Ctrl_Cmd_s;
 
+// cmd发布的视觉控制数据,由vision订阅
+typedef struct {
+  vision_mode_e vision_mode; // 视觉控制模式
+  uint8_t allow_auto_fire;   // 允许自动射击
+  float manual_yaw_offset;   // 手动微调yaw偏移量
+  float manual_pitch_offset; // 手动微调pitch偏移量
+} Vision_Ctrl_Cmd_s;
+
 /* ----------------gimbal/shoot/chassis发布的反馈数据----------------*/
 /**
  * @brief 由cmd订阅,其他应用也可以根据需要获取.
@@ -245,20 +262,29 @@ typedef struct {
   // ...
 } Shoot_Upload_Data_s;
 
+// vision发布的视觉处理数据,由cmd订阅用于融合控制
+typedef struct {
+  uint8_t vision_valid;  // 视觉数据有效标志
+  uint8_t target_locked; // 目标锁定标志
+  float yaw;             // 目标yaw角度(弧度)
+  float pitch;           // 目标pitch角度(角度)
+  uint8_t should_fire;   // 建议射击标志
+} Vision_Upload_Data_s;
+
 /* ----------------系统辨识任务相关定义----------------*/
 // 云台系统辨识轴选择枚举
 typedef enum {
-    SYSID_AXIS_YAW = 0,   // 辨识Yaw轴
-    SYSID_AXIS_PITCH = 1, // 辨识Pitch轴
-    SYS_ID_DISABLED_AXIS = 2 // 未选择任何轴
+  SYSID_AXIS_YAW = 0,      // 辨识Yaw轴
+  SYSID_AXIS_PITCH = 1,    // 辨识Pitch轴
+  SYS_ID_DISABLED_AXIS = 2 // 未选择任何轴
 } SysID_TargetAxis_e;
 
 // 云台系统辨识控制指令（gimbal任务发布，系统辨识任务订阅）
 typedef struct {
-    uint8_t enable;       // 使能标志：1-启动辨识，0-停止辨识
-    uint8_t axis;         // 目标轴：0-Yaw 1-Pitch
-    float yaw_ref;        // Yaw轴位置参考值（用于保持非辨识轴位置）
-    float pitch_ref;      // Pitch轴位置参考值（用于保持非辨识轴位置）
+  uint8_t enable;  // 使能标志：1-启动辨识，0-停止辨识
+  uint8_t axis;    // 目标轴：0-Yaw 1-Pitch
+  float yaw_ref;   // Yaw轴位置参考值（用于保持非辨识轴位置）
+  float pitch_ref; // Pitch轴位置参考值（用于保持非辨识轴位置）
 } SysID_Ctrl_Cmd_s;
 
 // 系统辨识反馈数据（系统辨识任务发布，云台任务订阅）

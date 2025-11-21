@@ -1,305 +1,316 @@
-#include "chassis.h"
+/**
+ ******************************************************************************
+ * @file	 user_lib.h
+ * @author  Wang Hongxi
+ * @version V1.0.0
+ * @date    2021/2/18
+ * @brief
+ ******************************************************************************
+ * @attention
+ *
+ ******************************************************************************
+ */
+#ifndef _USER_LIB_H
+#define _USER_LIB_H
+
 #include "arm_math.h"
-#include "bsp_dwt.h"
-#include "controller.h"
-#include "dji_motor.h"
-#include "general_def.h"
-#include "math.h"
-#include "message_center.h"
-#include "power_controller.h"
-#include "referee_UI.h"
-#include "referee_task.h"
-#include "robot_def.h"
-#include "super_cap.h"
-#include "sysid_task.h"
-#include "user_lib.h"
+#include "cmsis_os.h"
+#include "main.h"
+#include "stdint.h"
+#include "stm32f407xx.h"
 
-/* ============================================================
- * 系统辨识控制开关（测试时改为1，完成后改为0）
- * ============================================================ */
-#define ENABLE_CHASSIS_SYSID 0 // 0-关闭，1-启动辨识
-#define SYSID_TARGET_MOTOR 0   // 0-左前lf, 1-右前rf, 2-左后lb, 3-右后rb
+#ifndef user_malloc
+#ifdef _CMSIS_OS_H
+#define user_malloc pvPortMalloc
+#else
+#define user_malloc malloc
+#endif
+#endif
 
-#if ENABLE_CHASSIS_SYSID
-static Publisher_t *sysid_macro_pub = NULL;
-static uint8_t sysid_macro_done = 0;
+#define msin(x) (arm_sin_f32(x))
+#define mcos(x) (arm_cos_f32(x))
+
+typedef arm_matrix_instance_f32 mat;
+// 闂佸吋鐪归崕瀵告崲瀹ュ洨涓嶆俊銈呮噳閸嬫捇鎮㈠畡閭﹀敽婵炴垶鎸哥粔鎾ㄩ敓锟�,闂佸憡鐟崹顖涚閹烘挻濯撮悹鎭掑妽閺嗗紟31婵炲濯寸徊鎯瑰▽锟�32,婵炶揪绲藉Λ娆徫ｉ崫銉ュ灊闁诡垎鍐惧敽婵炴潙鍚嬪畝绋款瀶闁垮濯撮柨鐕傛嫹
+#define MatAdd arm_mat_add_f32
+#define MatSubtract arm_mat_sub_f32
+#define MatMultiply arm_mat_mult_f32
+#define MatTranspose arm_mat_trans_f32
+#define MatInverse arm_mat_inverse_f32
+void MatInit(mat *m, uint8_t row, uint8_t col);
+
+/* boolean type definitions */
+#ifndef TRUE
+#define TRUE 1 /**< boolean true  */
+#endif
+
+#ifndef FALSE
+#define FALSE 0 /**< boolean fails */
+#endif
+
+/* circumference ratio */
+#ifndef PI
+#define PI 3.14159265354f
+#endif
+
+#define VAL_LIMIT(val, min, max)                                               \
+  do {                                                                         \
+    if ((val) <= (min)) {                                                      \
+      (val) = (min);                                                           \
+    } else if ((val) >= (max)) {                                               \
+      (val) = (max);                                                           \
+    }                                                                          \
+  } while (0)
+
+#define ANGLE_LIMIT_360(val, angle)                                            \
+  do {                                                                         \
+    (val) = (angle) - (int)(angle);                                            \
+    (val) += (int)(angle) % 360;                                               \
+  } while (0)
+
+#define ANGLE_LIMIT_360_TO_180(val)                                            \
+  do {                                                                         \
+    if ((val) > 180)                                                           \
+      (val) -= 360;                                                            \
+  } while (0)
+
+#define VAL_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define VAL_MAX(a, b) ((a) > (b) ? (a) : (b))
 
 /**
- * @brief 系统辨识宏开关触发函数
- * @note 当ENABLE_CHASSIS_SYSID=1时，上电3秒后自动启动辨识
- *       辨识运行20秒后自动停止，电机完全停止
- *       测试完成后，将宏改为0，重新编译即可恢复正常
+ * @brief
+ * 闁哄鏅滈弻銊ッ洪弽銊р枖闁逞屽墴瀹曠ǹ螖閳ь剟宕楅柆宥呯闁逞屽墴閹啴宕熼銏℃殽闂佽法鍣﹂幏锟�?,婵炴垶鎸哥粔椋庢崲閸愨晝顩风€广儱娲ゆ慨褔姊婚崶锝呬壕闁荤喐娲戠粈浣割啅闁秴绀嗛柟顖滃缁侇噣鏌ㄩ悤鍌涘?婵炴垶鎹佸銊х礊濮椻偓濡線鍩€椤掑倹鍟哄ù锝囧劋閻ｈ京绱掗銉殭闁诲函鎷�
  *
- * 使用说明：
- *   1. 架起机器人（轮子悬空）
- *   2. 修改上面的宏：ENABLE_CHASSIS_SYSID = 1
- *   3. 选择目标电机：SYSID_TARGET_MOTOR = 0~3
- *   4. 编译烧录
- *   5. 配置Ozone记录变量（见文档）
- *   6. 上电等待3秒 → 自动启动辨识（持续20秒）
- *   7. 20秒后电机自动停止
- *   8. Ozone导出CSV，运行MATLAB分析
- *   9. 测试完成后，改回：ENABLE_CHASSIS_SYSID = 0
+ * @param size 闂佸憡甯掑Λ婵嬪储閵堝棗绶炵憸宥夋儍閿燂拷
+ * @return void*
  */
-static void ChassisSystemIDSwitch() {
-  static uint8_t sysid_stop_sent = 0;
+void *zmalloc(size_t size);
 
-  // 第一阶段：启动辨识（上电3秒后）
-  if (!sysid_macro_done && DWT_GetTimeline_s() > 3.0f) {
-    // 首次调用，注册发布者
-    if (sysid_macro_pub == NULL) {
-      sysid_macro_pub =
-          PubRegister("chassis_sysid_cmd", sizeof(Chassis_SysID_Ctrl_Cmd_s));
-    }
+// 闂佽法鍠愰弸濠氬箯閻戣姤鏅搁柛鏃戝亜鐏忓懘骞忛悜鑺ユ櫢闁哄倶鍊栫€氾拷
+float Sqrt(float x);
+// 闂佽法鍠愰弸濠氬箯閻戣姤鏅搁柡鍌樺€栫€氬綊鏌ㄩ悢鍛婄伄闁归鍏橀弫鎾诲棘閵堝棗顏�
+float abs_limit(float num, float Limit);
+// 闂佽法鍠庤ぐ銊╁棘椤撶偛娈╅柟椋庡厴閺佹捇寮妶鍡楊伓濞达綇鎷�
+float sign(float value);
+// 闂佽法鍠愰弸濠氬箯閻戣姤鏅搁柡鍌樺€栫€氬綊鏌ㄩ悢鍛婄伄闁归鍏橀弫鎾诲棘閵堝棗顏�
+float float_deadband(float Value, float minValue, float maxValue);
+// 闂佽法鍠撳楣冨礄閵堝棗顏堕梺璺ㄥ枑閺嬪骞忛悜鑺ユ櫢闁哄倶鍊栫€氾拷
+float float_constrain(float Value, float minValue, float maxValue);
+// 闂佽法鍠撳楣冨礄閵堝棗顏堕梺璺ㄥ枑閺嬪骞忛悜鑺ユ櫢闁哄倶鍊栫€氾拷
+int16_t int16_constrain(int16_t Value, int16_t minValue, int16_t maxValue);
+// 鐎甸偊浜弫鎾诲棘閵堝棗顏堕梺璺ㄥ枔濞奸箖宕欓妶鍡楊伓闂佽法鍠愰弸濠氬箯閻戣姤鏅搁柡鍌樺€栫€氾拷
+float loop_float_constrain(float Input, float minValue, float maxValue);
+// 闂佽法鍠曢～妤冩媼鐟欏嫬顏�
+// 闂佽法鍠愰弸濠氬箯閻戣姤鏅搁柣顐亜閸ゆ牠骞忛敓锟� 180
+// ~ -180
+float theta_format(float Ang);
 
-    // 发布启动指令
-    Chassis_SysID_Ctrl_Cmd_s sysid_cmd = {
-        .enable = 1,
-        .target_motor = SYSID_TARGET_MOTOR,
-    };
-    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+int float_rounding(float raw);
 
-    sysid_macro_done = 1; // 标记已触发
-  }
+float *Norm3d(float *v);
 
-  // 第二阶段：确保停止（上电25秒后，辨识应该已完成）
-  if (sysid_macro_done && !sysid_stop_sent && DWT_GetTimeline_s() > 25.0f) {
-    // 发送停止指令（确保辨识任务退出）
-    Chassis_SysID_Ctrl_Cmd_s sysid_cmd = {
-        .enable = 0,
-        .target_motor = SYSID_TARGET_MOTOR,
-    };
-    PubPushMessage(sysid_macro_pub, &sysid_cmd);
+float NormOf3d(float *v);
 
-    sysid_stop_sent = 1; // 标记已发送停止指令
-    // 注意：电机停止由sysid_task.c中的逻辑处理
-  }
-}
+void Cross3d(float *v1, float *v2, float *res);
+
+float Dot3d(float *v1, float *v2);
+
+float AverageFilter(float new_data, float *buf, uint8_t len);
+
+uint16_t LowPassFilter(uint16_t Out, float K);
+
+int16_t sign_with_deadband(float value, float deadband);
+
+#define rad_format(Ang) loop_float_constrain((Ang), -PI, PI)
+
 #endif
-/* ============================================================ */
+// 瀵邦亞骞嗛梽鎰畽閸戣姤鏆�
+float loop_float_constrain(float Input, float minValue, float maxValue) {
+  if (maxValue < minValue) {
+    return Input;
+  }
 
-/* 根据robot_def.h中的macro自动计算的参数 */
-#define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)   // 半轴距
-#define HALF_TRACK_WIDTH (TRACK_WIDTH / 2.0f) // 半轮距
-
-/* 底盘运行时配置实例 - const 优化，编译时优化 */
-static const Chassis_Runtime_Config_t chassis_config = {
-    .rc =
-        {
-            .max_linear_speed = 4.0f, // m/s - 最大线速度
-            .max_angular_speed = 4.0f // rad/s - 最大角速度
-        },
-    .force =
-        {
-            .torque_feedforward_coeff = 8.5f,    // N·m/(rad/s) - 扭矩前馈系数
-            .friction_threshold_omega = 8.5f,    // rad/s - 摩擦补偿速度阈值
-            .wheel_speed_feedback_coeff = 0.08f, // A·s/rad - 轮速反馈系数
-            .omega_error_lpf_alpha = 0.85f,      // 角速度误差滤波系数
-            .omega_threshold = 6.0f              // rad/s - 过零保护角速度阈值
-        },
-    .kinematics = {
-        .velocity_lpf_alpha = 0.85f, // 速度估算滤波系数
-        .speed_deadband = 120.0f,    // 速度死区阈值 (deg/s)
-        .follow_lpf_alpha = 0.85f,   // 跟随模式滤波系数
-        .rotate_speed = 3.5f         // 小陀螺模式旋转速度 (rad/s)
-    }};
-
-/* 底盘应用包含的模块和信息存储,底盘是单例模式,因此不需要为底盘建立单独的结构体
- */
-#ifdef CHASSIS_BOARD // 如果是底盘板,使用板载IMU获取底盘转动角速度
-#include "can_comm.h"
-#include "ins_task.h"
-static CANCommInstance *chasiss_can_comm; // 双板通信CAN comm
-attitude_t *Chassis_IMU_data;
-#endif // CHASSIS_BOARD
-#ifdef ONE_BOARD
-static Publisher_t *chassis_pub;                    // 用于发布底盘的数据
-static Subscriber_t *chassis_sub;                   // 用于订阅底盘的控制命令
-#endif                                              // !ONE_BOARD
-static Chassis_Ctrl_Cmd_s chassis_cmd_recv;         // 底盘接收到的控制命令
-static Chassis_Upload_Data_s chassis_feedback_data; // 底盘回传的反馈数据
-
-static referee_info_t *referee_data; // 用于获取裁判系统的数据
-static Referee_Interactive_info_t
-    ui_data; // UI数据，将底盘中的数据传入此结构体的对应变量中，UI会自动检测是否变化，对应显示UI
-
-static SuperCapInstance *cap; // 超级电容
-static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb,
-    *motor_rb; // left right forward back
-
-static PIDInstance chassis_follow_pid; // 底盘跟随云台PID控制器
-static float last_follow_wz = 0.0f; // 记录上一次跟随模式的wz输出，用于一阶滤波
-
-/* 功率控制相关变量已移至独立的power_controller模块 */
-
-/* ----------------力控策略相关变量---------------- */
-// 力控LQR控制器（替换PID实现更优控制）
-// 力控PID控制器（速度→力/扭矩）
-static PIDInstance chassis_force_x_pid; // X方向速度PID（输出：力 N）
-static PIDInstance chassis_force_y_pid; // Y方向速度PID（输出：力 N）
-static PIDInstance chassis_torque_pid;  // 旋转速度PID（输出：扭矩 N·m）
-
-// 速度估算相关变量
-static float chassis_estimated_vx = 0.0f; // 底盘估算速度X (m/s)
-static float chassis_estimated_vy = 0.0f; // 底盘估算速度Y (m/s)
-static float chassis_estimated_wz = 0.0f; // 底盘估算角速度 (rad/s)
-
-// 力控中间变量
-static float force_x = 0.0f;   // X方向控制力 (N)
-static float force_y = 0.0f;   // Y方向控制力 (N)
-static float torque_z = 0.0f;  // Z轴控制扭矩 (N·m)
-static float wheel_force[4];   // 各轮分配的力 (N)
-static float wheel_current[4]; // 各轮电流指令 (A)
-
-/* 私有函数计算的中介变量,设为静态避免参数传递的开销 */
-static float chassis_vx, chassis_vy; // 将云台系的速度投影到底盘坐标系
-
-// 力控 + 速度内环：麦轮正运动学解算的目标轮速（rad/s）
-static float target_wheel_omega[4]; // 各轮目标角速度，用于速度内环反馈
-
-void ChassisInit() {
-  // 四个轮子的参数一样,改tx_id和反转标志位即可
-  Motor_Init_Config_s chassis_motor_config = {
-      .can_init_config = {.can_handle = &hcan1},
-      .controller_setting_init_config =
-          {
-              .angle_feedback_source = MOTOR_FEED,
-              .speed_feedback_source = MOTOR_FEED,
-              .outer_loop_type = OPEN_LOOP,
-              .close_loop_type = OPEN_LOOP,
-              .feedforward_flag = FEEDFORWARD_NONE,
-          },
-      .motor_type = M3508,
-  };
-
-  chassis_motor_config.controller_param_init_config.speed_feedforward_ptr =
-      NULL;
-
-  chassis_motor_config.can_init_config.tx_id = 2;
-  chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_REVERSE; // 修改：左前电机反转
-  motor_lf = DJIMotorInit(&chassis_motor_config);
-
-  chassis_motor_config.can_init_config.tx_id = 3;
-  chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_NORMAL; // 修改：右前电机反转
-  motor_rf = DJIMotorInit(&chassis_motor_config);
-
-  chassis_motor_config.can_init_config.tx_id = 1;
-  chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_NORMAL; // 保持：左后电机正常
-  motor_lb = DJIMotorInit(&chassis_motor_config);
-
-  chassis_motor_config.can_init_config.tx_id = 4;
-  chassis_motor_config.controller_setting_init_config.motor_reverse_flag =
-      MOTOR_DIRECTION_REVERSE; // 保持：右后电机正常
-  motor_rb = DJIMotorInit(&chassis_motor_config);
-
-  referee_data = UITaskInit(&huart6, &ui_data); // 裁判系统初始化,会同时初始化UI
-
-  SuperCap_Init_Config_s cap_conf = {
-      .can_config = {
-          .can_handle = &hcan2,
-          .tx_id = 0x302, // 超级电容默认接收id
-          .rx_id = 0x301, // 超级电容默认发送id,注意tx和rx在其他人看来是反的
-      }};
-  cap = SuperCapInit(&cap_conf); // 超级电容初始化
-
-  // 发布订阅初始化,如果为双板,则需要can comm来传递消息
-#ifdef CHASSIS_BOARD
-  Chassis_IMU_data = INS_Init(); // 底盘IMU初始化
-
-  CANComm_Init_Config_s comm_conf = {
-      .can_config =
-          {
-              .can_handle = &hcan2,
-              .tx_id = 0x311,
-              .rx_id = 0x312,
-          },
-      .recv_data_len = sizeof(Chassis_Ctrl_Cmd_s),
-      .send_data_len = sizeof(Chassis_Upload_Data_s),
-  };
-  chasiss_can_comm = CANCommInit(&comm_conf); // can comm初始化
-#endif                                        // CHASSIS_BOARD
-
-  // 功率控制器初始化（独立模块）
-  PowerControllerConfig_t power_config = {
-      .k1_init = 0.22f,                  // 转速损耗系数初始值
-      .k2_init = 1.2f,                   // 力矩损耗系数初始值
-      .k3 = 2.78f,                       // 静态功率损耗
-      .rls_lambda = 0.9999f,             // RLS遗忘因子
-      .torque_constant = 0.3f,           // M3508电机转矩常数 (Nm/A)
-      .current_scale = 20.0f / 16384.0f, // CAN指令值转电流系数
-  };
-  PowerControllerInit(&power_config);
-
-#ifdef ONE_BOARD // 单板控制整车,则通过pubsub来传递消息
-  chassis_sub = SubRegister("chassis_cmd", sizeof(Chassis_Ctrl_Cmd_s));
-  chassis_pub = PubRegister("chassis_feed", sizeof(Chassis_Upload_Data_s));
-#endif // ONE_BOARD
-
-  // 底盘跟随云台PID控制器初始化（统一力控：输出角速度）
-  // 注意：输出单位为角速度（rad/s），后续通过力控PID转换为扭矩
-  PID_Init_Config_s follow_pid_config = {
-      .Kp = 0.2f,                // 单位：(rad/s)/度（角度误差→角速度）
-      .Ki = 0.0f,                // 积分增益（可选开启）
-      .Kd = 0.0f,                // 微分增益（暂不使用）
-      .Derivative_LPF_RC = 0.0f, // 不使用微分滤波
-      .IntegralLimit = 0.5f,     // 积分限幅：1 rad/s
-      .MaxOut = 5.0f,            // 最大输出：5 rad/s（底盘旋转角速度）
-      .DeadBand = 1.58f,         // 死区：0.25度（静止时更稳定）
-      .Improve = PID_Integral_Limit | PID_Derivative_On_Measurement,
-  };
-  PIDInit(&chassis_follow_pid, &follow_pid_config);
-
-  /* ----------------力控策略PID初始化---------------- */
-  // X方向力控PID初始化 (输出单位: N)
-  PID_Init_Config_s force_x_pid_config = {
-      .Kp = 200.0f,                // 比例增益 [N/(m/s)]
-      .Ki = 0.0f,                  // 积分增益 [N/(m·s)]
-      .Kd = 0.0f,                  // 微分增益 [N·s/m]（抑制超调）
-      .Derivative_LPF_RC = 0.12f,  // 微分低通滤波
-      .IntegralLimit = 100.0f,     // 积分限幅 [N]
-      .MaxOut = MAX_CONTROL_FORCE, // 最大输出力 [N]
-      .DeadBand = 0.01f,           // 死区 [m/s]
-      .Improve = PID_Integral_Limit,
-  };
-  PIDInit(&chassis_force_x_pid, &force_x_pid_config);
-
-  // Y方向力控PID初始化 (输出单位: N)
-  PID_Init_Config_s force_y_pid_config = {
-      .Kp = 200.0f,
-      .Ki = 0.0f,
-      .Kd = 0.0f,
-      .Derivative_LPF_RC = 0.02f,
-      .IntegralLimit = 100.0f,
-      .MaxOut = MAX_CONTROL_FORCE,
-      .DeadBand = 0.01f,
-      .Improve = PID_Integral_Limit,
-  };
-  PIDInit(&chassis_force_y_pid, &force_y_pid_config);
-
-  // 旋转扭矩PID初始化 (输出单位: N·m) - 优化参数减少振荡
-  PID_Init_Config_s torque_pid_config = {
-      .Kp = 2.5f,             // 比例增益 [N·m/(rad/s)] - 从2.5降至1.5减少过冲
-      .Ki = 0.0f,             // 积分增益 [N·m/rad]
-      .Kd = 0.0f,             // 微分增益 [N·m·s/rad] - 增加阻尼抑制振荡
-      .IntegralLimit = 50.0f, // 积分限幅 [N·m]
-      .MaxOut = 5.0f,
-      .DeadBand = 0.1f, // 死区 [rad/s] - 修复：从0.15增至0.3，减少回位后震荡
-      .Output_LPF_RC = 0.00087f,
-      .Improve = PID_OutputFilter | PID_Derivative_On_Measurement,
-  };
-  PIDInit(&chassis_torque_pid, &torque_pid_config);
-
-  /* ----------------底盘系统辨识初始化---------------- */
-  // 初始化底盘轮速系统辨识任务（用于LQR参数标定）
-  Chassis_SysIDTaskInit(motor_lf, motor_rf, motor_lb, motor_rb);
+  if (Input > maxValue) {
+    float len = maxValue - minValue;
+    while (Input > maxValue) {
+      Input -= len;
+    }
+  } else if (Input < minValue) {
+    float len = maxValue - minValue;
+    while (Input < minValue) {
+      Input += len;
+    }
+  }
+  return Input;
 }
 
-// 计算每个轮子到旋转中心的距离（单位：m）
-// 使用勾股定理: r = sqrt(x^2 + y^2)
-// WHEEL_BASE和TRACK_WIDTH在robot_def.h中已经是m，无需转换
+// 鐎殿啫鍐唺闁哄秶鍘х槐锟犲礌閺嶏箒绀�-PI~PI
+
+// 閻熸瑦甯掔€规娊寮介悡搴ｇ闁告牗鐗旂拹锟�-180~180
+float theta_format(float Ang) {
+  return loop_float_constrain(Ang, -180.0f, 180.0f);
+}
+
+int float_rounding(float raw) {
+  static int integer;
+  static float decimal;
+  integer = (int)raw;
+  decimal = raw - integer;
+  if (decimal > 0.5f)
+    integer++;
+  return integer;
+}
+
+// 濞戞挸顦卞ǎ顕€宕ラ幋锕€娅ょ憸鐗堝笂缁旀挳宕犻敓锟�
+float *Norm3d(float *v) {
+  float len = Sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  v[0] /= len;
+  v[1] /= len;
+  v[2] /= len;
+  return v;
+}
+
+// 閻犱緤绱曢悾璇参熼敓鐘虫瘣
+float NormOf3d(float *v) {
+  return Sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+// 濞戞挸顦卞ǎ顕€宕ラ幋锕€娅ら柛娆忣槷缁犵笨1 x v2
+void Cross3d(float *v1, float *v2, float *res) {
+  res[0] = v1[1] * v2[2] - v1[2] * v2[1];
+  res[1] = v1[2] * v2[0] - v1[0] * v2[2];
+  res[2] = v1[0] * v2[1] - v1[1] * v2[0];
+}
+
+// 濞戞挸顦卞ǎ顕€宕ラ幋锕€娅ら柣鎰扳偓娑氼啋
+float Dot3d(float *v1, float *v2) {
+  return v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+}
+
+// 闁秆冩搐閳ь剙鍚嬮幎銈呪枖閿燂拷,闁告帞濞€濞呭穭uffer濞戞搩鍘惧▓鎴﹀嫉閳ь剟宕ユ惔婵堫伇濞戞搩浜滈崢鎾舵閿燂拷,濠靛鍋勯崣鍡涘棘閹殿喗鐣遍柛蹇撳暟缁€宀勭嵁閼哥數婀存鐐插暱濞煎酣宕愰敓锟�
+float AverageFilter(float new_data, float *buf, uint8_t len) {
+  float sum = 0;
+  for (uint8_t i = 0; i < len - 1; i++) {
+    buf[i] = buf[i + 1];
+    sum += buf[i];
+  }
+  buf[len - 1] = new_data;
+  sum += new_data;
+  return sum / len;
+}
+
+void MatInit(mat *m, uint8_t row, uint8_t col) {
+  m->numCols = col;
+  m->numRows = row;
+  m->pData = (float *)zmalloc(row * col * sizeof(float));
+}
+
+uint16_t LowPassFilter(uint16_t Out, float K) {
+  // 閻庤鐭粻鐔哥▔婵犱胶顏辨繛鍡磿濞堟垶娼忛幘鍐叉瘔
+  static uint16_t Last_Out = 0;
+  // 濞达絽閰ｉ埀顒佺閹躲倕鈻旈敓锟�
+  Out = K * Out + (1 - K) * Last_Out;
+  // 闁哄洤鐡ㄩ弻濠冪▔婵犱胶顏辨繛鍡磿濞堟垶娼忛幘鍐叉瘔闁稿⿵鎷�
+  Last_Out = Out;
+  return Out;
+}
+
+/**
+ * @brief 缁楋箑褰块崙鑺ユ殶 (鐢附顒撮崠锟�)
+ * @param value 鏉堟挸鍙嗛崐锟�
+ * @param deadband 濮濊灏懠鍐ㄦ纯
+ * @return -1, 0, or 1
+ * @note 瑜版捁绶崗銉モ偓鐓庢躬[-deadband, deadband]閼煎啫娲块崘鍛,
+ * 鏉╂柨娲�0;
+ * 閸氾箑鍨潻鏂挎礀鏉堟挸鍙嗛崐鑲╂畱缁楋箑褰块敍宀€鏁ゆ禍搴＄俺閻╂﹢妯嗛崝娑溗夐崑锟�
+ */
+int16_t sign_with_deadband(float value, float deadband) {
+  if (value > deadband)
+    return 1;
+  else if (value < -deadband)
+    return -1;
+  else
+    return 0;
+}
+
+/**
+ * @brief 濞搭喚鍋ｉ弫棰佺秵闁碍鎶ゅ▔銏犳珤
+ * @param new_value 閺傛壆娈戞潏鎾冲弳閸婏拷
+ * @param K 濠娿倖灏濈化缁樻殶 (0.0~1.0),
+ * 鐡掑﹤鐨⿰銈嗗皾閺佸牊鐏夌搾濠傚繁
+ * @param last_value 娑撳﹣绔村▎锛勬畱鏉堟挸鍤崐锟�
+ * @return 濠娿倖灏濋崥搴ｆ畱鏉堟挸鍤崐锟�
+ */
+float LowPassFilter_Float(float new_value, float K, float *last_value) {
+  float out = K * new_value + (1.0f - K) * (*last_value);
+  *last_value = out;
+  return out;
+}
+
+/**
+ * @brief  閺傛粌娼潪顖濐潐閸掓帒娅掗弽绋跨妇閸戣姤鏆�
+ * (閸楁洑缍�:
+ * CAN閹稿洣鎶ら崐锟�),閻€劋绨柨顔炬磸閹貉冨煑
+ * @param  target      閻╊喗鐖ｉ幐鍥︽姢閸婏拷
+ * @param  current     瑜版挸澧犵憴鍕灊閸ｃ劎娈戞潏鎾冲毉閹稿洣鎶ら崐锟�
+ * (娑撳﹣绔撮崨銊︽埂閻ㄥ嫮绮ㄩ弸锟�)
+ * @param  accel       閸旂娀鈧喎瀹�
+ * (閹稿洣鎶ら崐锟�/缁夛拷)
+ * @param  decel       閸戝繘鈧喎瀹�
+ * (閹稿洣鎶ら崐锟�/缁夛拷)
+ * @param  brake_decel 閸欏秴鎮滈崚璺哄З閸戝繘鈧喎瀹�
+ * (閹稿洣鎶ら崐锟�/缁夛拷)
+ * @param  dt          閹貉冨煑閸涖劍婀� (s)
+ * @retval
+ * 瑜版挸澧犻崨銊︽埂鐟欏嫬鍨濇總鐣屾畱鏉堟挸鍤幐鍥︽姢閸婏拷
+ */
+static float SoftRamp_CMD(float target, float current, float accel, float decel,
+                          float brake_decel, float dt) {
+  float ramp_out = current;
+  float error = target - current;
+
+  // 閸掋倖鏌囬弰顖氬闁喆鈧礁鍣洪柅鐔荤箷閺勵垰寮介崥鎴濆煑閸旓拷
+  if (target * current >= 0) // 閻╊喗鐖ｉ崐鐓庢嫲瑜版挸澧犻崐鐓庢倱閸欙拷
+  {
+    if (fabsf(target) > fabsf(current)) // 閸旂娀鈧拷
+    {
+      ramp_out += accel * dt * sign(error);
+    } else // 閸戝繘鈧拷
+    {
+      ramp_out += decel * dt * sign(error);
+    }
+  } else // 閻╊喗鐖ｉ崐鐓庢嫲瑜版挸澧犻崐鐓庣磽閸欙拷 (閸欏秴鎮滈崚璺哄З)
+  {
+    ramp_out += brake_decel * dt * sign(error);
+  }
+
+  // 闂勬劕鍩楃憴鍕灊閸婇棿绗夐懗鍊熺Т鏉╁洨娲伴弽鍥р偓锟�
+  if (sign(error) > 0) {
+    ramp_out = float_constrain(ramp_out, current, target);
+  } else {
+    ramp_out = float_constrain(ramp_out, target, current);
+  }
+
+  // 閺堚偓缂佸牆鍟€鐎电绶崙楦跨箻鐞涘奔绔村▎鈩冣偓鏄忓瘱閸ュ娈戦梽鎰煑
+  return float_constrain(ramp_out, -16384.0f, 16384.0f);
+}
+
+float Sqrt(float x) {
+  if (x <= 0.0f)
+    return 0.0f;
+  float out = 0.0f;
+  arm_sqrt_f32(x, &out);
+  return out;
+}
+
+float float_constrain(float Value, float minValue, float maxValue) {
+  if (Value < minValue)
+    return minValue;
+  if (Value > maxValue)
+    return maxValue;
+  return Value;
+} // 浣跨敤鍕捐偂瀹氱悊: r = sqrt(x^2 + y^2)
+// WHEEL_BASE鍜孴RACK_WIDTH鍦╮obot_def.h涓凡缁忔槸m锛屾棤闇€杞崲
 #define LF_CENTER                                                              \
   sqrtf(powf(HALF_TRACK_WIDTH + CENTER_GIMBAL_OFFSET_X, 2.0f) +                \
         powf(HALF_WHEEL_BASE - CENTER_GIMBAL_OFFSET_Y, 2.0f))
@@ -314,60 +325,65 @@ void ChassisInit() {
         powf(HALF_WHEEL_BASE + CENTER_GIMBAL_OFFSET_Y, 2.0f))
 
 /* ==================================================== */
-/* ----------------力控策略核心函数---------------- */
+/* ----------------鍔涙帶绛栫暐鏍稿績鍑芥暟---------------- */
 /* ==================================================== */
 
 /**
- * @brief 麦轮正运动学解算 - 计算各轮目标角速度（用于速度内环反馈）
- * @note  参考robowalker的Kinematics_Inverse_Resolution思想
- *        从底盘速度(vx,vy,wz)解算出各轮的目标角速度
- *        这是力控+速度内环的关键：提供轮速目标值用于动态补偿
+ * @brief 楹﹁疆姝ｈ繍鍔ㄥ瑙ｇ畻 -
+ * 璁＄畻鍚勮疆鐩爣瑙掗€熷害锛堢敤浜庨€熷害鍐呯幆鍙嶉锛�
+ * @note  鍙傝€價obowalker鐨凨inematics_Inverse_Resolution鎬濇兂
+ *        浠庡簳鐩橀€熷害(vx,vy,wz)瑙ｇ畻鍑哄悇杞殑鐩爣瑙掗€熷害
+ *        杩欐槸鍔涙帶+閫熷害鍐呯幆鐨勫叧閿細鎻愪緵杞€熺洰鏍囧€肩敤浜庡姩鎬佽ˉ鍋�
  */
 static void MecanumKinematicsCalculate() {
-  // 麦轮正运动学：从底盘速度解算各轮线速度
-  // v_wheel = v_chassis + ω × r_vec
-  // 对于45度麦轮，与力分配公式对应
+  // 楹﹁疆姝ｈ繍鍔ㄥ锛氫粠搴曠洏閫熷害瑙ｇ畻鍚勮疆绾块€熷害
+  // v_wheel = v_chassis + 蠅 脳 r_vec
+  // 瀵逛簬45搴﹂害杞紝涓庡姏鍒嗛厤鍏紡瀵瑰簲
 
   float vx = chassis_vx;
   float vy = chassis_vy;
   float wz = chassis_cmd_recv.wz;
 
-  // 计算各轮线速度（m/s）- 必须与力分配公式的符号一致
+  // 璁＄畻鍚勮疆绾块€熷害锛坢/s锛�-
+  // 蹇呴』涓庡姏鍒嗛厤鍏紡鐨勭鍙蜂竴鑷�
   float wheel_linear_vel[4];
-  wheel_linear_vel[0] = (-vx - vy) + wz * LF_CENTER; // 左前 +wz
-  wheel_linear_vel[1] = (-vx + vy) - wz * RF_CENTER; // 右前 -wz
-  wheel_linear_vel[2] = (vx - vy) - wz * LB_CENTER;  // 左后 -wz
-  wheel_linear_vel[3] = (vx + vy) + wz * RB_CENTER;  // 右后 +wz
+  wheel_linear_vel[0] = (-vx - vy) + wz * LF_CENTER; // 宸﹀墠 +wz
+  wheel_linear_vel[1] = (-vx + vy) - wz * RF_CENTER; // 鍙冲墠 -wz
+  wheel_linear_vel[2] = (vx - vy) - wz * LB_CENTER;  // 宸﹀悗 -wz
+  wheel_linear_vel[3] = (vx + vy) + wz * RB_CENTER;  // 鍙冲悗 +wz
 
-  // 转换为电机角速度（rad/s）
-  // 关键：线速度 → 轮子角速度 → 电机角速度（考虑减速比）
+  // 杞崲涓虹數鏈鸿閫熷害锛坮ad/s锛�
+  // 鍏抽敭锛氱嚎閫熷害 鈫� 杞瓙瑙掗€熷害 鈫�
+  // 鐢垫満瑙掗€熷害锛堣€冭檻鍑忛€熸瘮锛�
   for (int i = 0; i < 4; i++) {
-    // 轮子角速度 = 线速度 / 轮子半径
+    // 杞瓙瑙掗€熷害 = 绾块€熷害 / 杞瓙鍗婂緞
     float wheel_omega = wheel_linear_vel[i] / RADIUS_WHEEL;
-    // 电机角速度 = 轮子角速度 × 减速比
+    // 鐢垫満瑙掗€熷害 = 杞瓙瑙掗€熷害 脳 鍑忛€熸瘮
     target_wheel_omega[i] = wheel_omega * REDUCTION_RATIO_WHEEL;
   }
 }
 
 /**
- * @brief 估算底盘当前速度（优化版）
- * @detail 使用一阶低通滤波平滑速度估算
+ * @brief 浼扮畻搴曠洏褰撳墠閫熷害锛堜紭鍖栫増锛�
+ * @detail 浣跨敤涓€闃朵綆閫氭护娉㈠钩婊戦€熷害浼扮畻
  *
- * 算法流程：
- * 1. 读取四个电机角速度 → 转换为线速度
- * 2. 应用麦轮逆运动学公式计算底盘速度
- * 3. 一阶低通滤波消除编码器噪声
+ * 绠楁硶娴佺▼锛�
+ * 1. 璇诲彇鍥涗釜鐢垫満瑙掗€熷害 鈫�
+ * 杞崲涓虹嚎閫熷害
+ * 2. 搴旂敤楹﹁疆閫嗚繍鍔ㄥ鍏紡璁＄畻搴曠洏閫熷害
+ * 3. 涓€闃朵綆閫氭护娉㈡秷闄ょ紪鐮佸櫒鍣０
  *
- * 公式说明：
+ * 鍏紡璇存槑锛�
  *   vx = (-vlf - vrf + vlb + vrb) / 4
  *   vy = (-vlf + vrf - vlb + vrb) / 4
- *   wz = (vlf - vrf - vlb + vrb) / (4×r)
- *   其中 r = sqrt( (L/2)² + (W/2)² )
+ *   wz = (vlf - vrf - vlb + vrb) / (4脳r)
+ *   鍏朵腑 r = sqrt( (L/2)虏 + (W/2)虏 )
  */
 static void EstimateChassisVelocity(void) {
-  /* ===== 第一步：电机角速度 → 轮子线速度 ===== */
-  // 转换公式：线速度 = 角速度(rad/s) × 半径
-  // 注意：反转电机需要取反以匹配坐标系
+  /* ===== 绗竴姝ワ細鐢垫満瑙掗€熷害 鈫� 杞瓙绾块€熷害 =====
+   */
+  // 杞崲鍏紡锛氱嚎閫熷害 = 瑙掗€熷害(rad/s) 脳 鍗婂緞
+  // 娉ㄦ剰锛氬弽杞數鏈洪渶瑕佸彇鍙嶄互鍖归厤鍧愭爣绯�
   const float speed_to_linear =
       DEGREE_2_RAD * RADIUS_WHEEL / REDUCTION_RATIO_WHEEL;
   float lf_linear_vel = -motor_lf->measure.speed_aps * speed_to_linear;
@@ -375,13 +391,13 @@ static void EstimateChassisVelocity(void) {
   float lb_linear_vel = motor_lb->measure.speed_aps * speed_to_linear;
   float rb_linear_vel = -motor_rb->measure.speed_aps * speed_to_linear;
 
-  /* ===== 第二步：麦轮逆运动学解算 ===== */
-  // 计算旋转半径：从底盘中心到轮子的距离（预计算避免重复计算）
+  /* ===== 绗簩姝ワ細楹﹁疆閫嗚繍鍔ㄥ瑙ｇ畻 ===== */
+  // 璁＄畻鏃嬭浆鍗婂緞锛氫粠搴曠洏涓績鍒拌疆瀛愮殑璺濈锛堥璁＄畻閬垮厤閲嶅璁＄畻锛�
   static const float rotation_radius = sqrtf(
       HALF_WHEEL_BASE * HALF_WHEEL_BASE + HALF_TRACK_WIDTH * HALF_TRACK_WIDTH);
 
-  // 应用逆运动学公式计算瞬时速度
-  const float inv_4 = 0.25f; // 预计算1/4，避免除法
+  // 搴旂敤閫嗚繍鍔ㄥ鍏紡璁＄畻鐬椂閫熷害
+  const float inv_4 = 0.25f; // 棰勮绠�1/4锛岄伩鍏嶉櫎娉�
   float instant_vx =
       (-lf_linear_vel - rf_linear_vel + lb_linear_vel + rb_linear_vel) * inv_4;
   float instant_vy =
@@ -390,10 +406,11 @@ static void EstimateChassisVelocity(void) {
       (lf_linear_vel - rf_linear_vel - lb_linear_vel + rb_linear_vel) /
       (4.0f * rotation_radius);
 
-  /* ===== 第三步：低通滤波平滑噪声 ===== */
-  // 使用一阶低通滤波：y[n] = α×x[n] + (1-α)×y[n-1]
-  // α = 0.85 对应截止频率约30.9Hz（200Hz采样）
-  static float filtered_vx = 0.0f; // 静态变量避免重复初始化
+  /* ===== 绗笁姝ワ細浣庨€氭护娉㈠钩婊戝櫔澹� ===== */
+  // 浣跨敤涓€闃朵綆閫氭护娉細y[n] = 伪脳x[n] +
+  // (1-伪)脳y[n-1] 伪 = 0.85
+  // 瀵瑰簲鎴棰戠巼绾�30.9Hz锛�200Hz閲囨牱锛�
+  static float filtered_vx = 0.0f; // 闈欐€佸彉閲忛伩鍏嶉噸澶嶅垵濮嬪寲
   static float filtered_vy = 0.0f;
   static float filtered_wz = 0.0f;
 
@@ -406,192 +423,202 @@ static void EstimateChassisVelocity(void) {
 }
 
 /**
- * @brief 计算目标扭矩前馈补偿
- * @param target_wz 目标角速度 (rad/s)
- * @return 前馈扭矩 (N·m)
- * @detail 前馈原理：预估维持角速度所需的基础扭矩
+ * @brief 璁＄畻鐩爣鎵煩鍓嶉琛ュ伩
+ * @param target_wz 鐩爣瑙掗€熷害 (rad/s)
+ * @return 鍓嶉鎵煩 (N路m)
+ * @detail
+ * 鍓嶉鍘熺悊锛氶浼扮淮鎸佽閫熷害鎵€闇€鐨勫熀纭€鎵煩
  */
 static inline float CalculateTorqueFeedforward(float target_wz) {
   return chassis_config.force.torque_feedforward_coeff * target_wz;
 }
 
 /**
- * @brief 速度闭环控制 → 力/扭矩输出（重构版）
+ * @brief 閫熷害闂幆鎺у埗 鈫�
+ * 鍔�/鎵煩杈撳嚭锛堥噸鏋勭増锛�
  *
- * 控制链路：
- * 目标速度 → PID控制器 → 需求力/扭矩 → 前馈补偿 → 最终输出
+ * 鎺у埗閾捐矾锛�
+ * 鐩爣閫熷害 鈫� PID鎺у埗鍣� 鈫� 闇€姹傚姏/鎵煩 鈫� 鍓嶉琛ュ伩 鈫�
+ * 鏈€缁堣緭鍑�
  */
 static void VelocityToForceControl(void) {
-  /* ===== 步骤1：更新速度估算 ===== */
+  /* ===== 姝ラ1锛氭洿鏂伴€熷害浼扮畻 ===== */
   EstimateChassisVelocity();
 
-  /* ===== 步骤2：获取目标速度 ===== */
+  /* ===== 姝ラ2锛氳幏鍙栫洰鏍囬€熷害 ===== */
   float target_vx = chassis_vx;
   float target_vy = chassis_vy;
   float target_wz = chassis_cmd_recv.wz; // rad/s
 
-  /* ===== 步骤3：PID速度控制 → 力/扭矩 ===== */
-  // PID输出：根据速度误差计算所需的合力(N)和扭矩(N·m)
+  /* ===== 姝ラ3锛歅ID閫熷害鎺у埗 鈫� 鍔�/鎵煩 ===== */
+  // PID杈撳嚭锛氭牴鎹€熷害璇樊璁＄畻鎵€闇€鐨勫悎鍔�(N)鍜屾壄鐭�(N路m)
   force_x = PIDCalculate(&chassis_force_x_pid, chassis_estimated_vx, target_vx);
   force_y = PIDCalculate(&chassis_force_y_pid, chassis_estimated_vy, target_vy);
   float torque_feedback =
       PIDCalculate(&chassis_torque_pid, chassis_estimated_wz, target_wz);
 
-  /* ===== 步骤4：前馈补偿 ===== */
-  // 前馈减少PID负担，提高响应速度
+  /* ===== 姝ラ4锛氬墠棣堣ˉ鍋� ===== */
+  // 鍓嶉鍑忓皯PID璐熸媴锛屾彁楂樺搷搴旈€熷害
   float torque_feedforward = CalculateTorqueFeedforward(target_wz);
 
-  /* ===== 步骤5：合成最终输出 ===== */
+  /* ===== 姝ラ5锛氬悎鎴愭渶缁堣緭鍑� ===== */
   torque_z = torque_feedback + torque_feedforward;
 
-  /* ===== 步骤6：限幅保护 ===== */
+  /* ===== 姝ラ6锛氶檺骞呬繚鎶� ===== */
   force_x = float_constrain(force_x, -MAX_CONTROL_FORCE, MAX_CONTROL_FORCE);
   force_y = float_constrain(force_y, -MAX_CONTROL_FORCE, MAX_CONTROL_FORCE);
   torque_z = float_constrain(torque_z, -MAX_CONTROL_TORQUE, MAX_CONTROL_TORQUE);
 }
 /**
- * @brief 力的动力学逆解算（力控核心环节2）
- * @note  将底盘合力分配到各个轮子，使用独立轮距力臂（修复振荡问题）
- *       修复：使用各轮独立力臂而非统一rotation_radius，与正解算保持一致
+ * @brief
+ * 鍔涚殑鍔ㄥ姏瀛﹂€嗚В绠楋紙鍔涙帶鏍稿績鐜妭2锛�
+ * @note
+ * 灏嗗簳鐩樺悎鍔涘垎閰嶅埌鍚勪釜杞瓙锛屼娇鐢ㄧ嫭绔嬭疆璺濆姏鑷傦紙淇鎸崱闂锛�
+ *       淇锛氫娇鐢ㄥ悇杞嫭绔嬪姏鑷傝€岄潪缁熶竴rotation_radius锛屼笌姝ｈВ绠椾繚鎸佷竴鑷�
  */
 static void ForceDynamicsInverseResolution() {
-  // 麦轮力分配（参考robowalker思想，修正为独立轮距）
-  // 对于麦轮，每个轮子受到的力 = 平移力分量 + 旋转力矩分量
-  // 修复：必须使用与正解算一致的独立轮距力臂，避免参数不匹配导致振荡
+  // 楹﹁疆鍔涘垎閰嶏紙鍙傝€價obowalker鎬濇兂锛屼慨姝ｄ负鐙珛杞窛锛�
+  // 瀵逛簬楹﹁疆锛屾瘡涓疆瀛愬彈鍒扮殑鍔� = 骞崇Щ鍔涘垎閲� +
+  // 鏃嬭浆鍔涚煩鍒嗛噺
+  // 淇锛氬繀椤讳娇鐢ㄤ笌姝ｈВ绠椾竴鑷寸殑鐙珛杞窛鍔涜噦锛岄伩鍏嶅弬鏁颁笉鍖归厤瀵艰嚧鎸崱
 
-  // 力分配矩阵（麦轮45度辊子配置）- 修正：使用独立轮距力臂
-  // wheel_force[i] = f_x * cos(angle) + f_y * sin(angle) + torque /
-  // r_individual 关键修正：符号和力臂必须与正解算中的wz符号一致！
+  // 鍔涘垎閰嶇煩闃碉紙楹﹁疆45搴﹁緤瀛愰厤缃級-
+  // 淇锛氫娇鐢ㄧ嫭绔嬭疆璺濆姏鑷� wheel_force[i] = f_x *
+  // cos(angle) + f_y * sin(angle) + torque / r_individual
+  // 鍏抽敭淇锛氱鍙峰拰鍔涜噦蹇呴』涓庢瑙ｇ畻涓殑wz绗﹀彿涓€鑷达紒
   //
-  // 正解算符号参考（333-337行）：
-  // vt_lf = ... + wz * LF_CENTER   → +wz，使用LF_CENTER力臂
-  // vt_rf = ... - wz * RF_CENTER   → -wz，使用RF_CENTER力臂
-  // vt_lb = ... - wz * LB_CENTER   → -wz，使用LB_CENTER力臂
-  // vt_rb = ... + wz * RB_CENTER   → +wz，使用RB_CENTER力臂
+  // 姝ｈВ绠楃鍙峰弬鑰冿紙333-337琛岋級锛�
+  // vt_lf = ... + wz * LF_CENTER   鈫� +wz锛屼娇鐢↙F_CENTER鍔涜噦
+  // vt_rf = ... - wz * RF_CENTER   鈫� -wz锛屼娇鐢≧F_CENTER鍔涜噦
+  // vt_lb = ... - wz * LB_CENTER   鈫� -wz锛屼娇鐢↙B_CENTER鍔涜噦
+  // vt_rb = ... + wz * RB_CENTER   鈫� +wz锛屼娇鐢≧B_CENTER鍔涜噦
 
-  // 左前轮 (45度配置) → +wz，使用LF_CENTER独立力臂
+  // 宸﹀墠杞� (45搴﹂厤缃�) 鈫�
+  // +wz锛屼娇鐢↙F_CENTER鐙珛鍔涜噦
   wheel_force[0] = (-force_x - force_y) / 4.0f + torque_z / (4.0f * LF_CENTER);
 
-  // 右前轮 → -wz，使用RF_CENTER独立力臂
+  // 鍙冲墠杞� 鈫� -wz锛屼娇鐢≧F_CENTER鐙珛鍔涜噦
   wheel_force[1] = (-force_x + force_y) / 4.0f - torque_z / (4.0f * RF_CENTER);
 
-  // 左后轮 → -wz，使用LB_CENTER独立力臂
+  // 宸﹀悗杞� 鈫� -wz锛屼娇鐢↙B_CENTER鐙珛鍔涜噦
   wheel_force[2] = (force_x - force_y) / 4.0f - torque_z / (4.0f * LB_CENTER);
 
-  // 右后轮 → +wz，使用RB_CENTER独立力臂
+  // 鍙冲悗杞� 鈫� +wz锛屼娇鐢≧B_CENTER鐙珛鍔涜噦
   wheel_force[3] = (force_x + force_y) / 4.0f + torque_z / (4.0f * RB_CENTER);
 }
 
 /**
- * @brief 计算速度反馈补偿电流
- * @param target_omega 目标角速度 (rad/s)
- * @param actual_omega 实际角速度 (rad/s)
- * @param motor_index 电机索引
- * @return 补偿电流 (A)
+ * @brief 璁＄畻閫熷害鍙嶉琛ュ伩鐢垫祦
+ * @param target_omega 鐩爣瑙掗€熷害 (rad/s)
+ * @param actual_omega 瀹為檯瑙掗€熷害 (rad/s)
+ * @param motor_index 鐢垫満绱㈠紩
+ * @return 琛ュ伩鐢垫祦 (A)
  */
 static float CalculateSpeedFeedback(float target_omega, float actual_omega,
                                     uint8_t motor_index) {
-  // 计算角速度误差
+  // 璁＄畻瑙掗€熷害璇樊
   float omega_error = target_omega - actual_omega;
 
-  // 二级滤波减少噪声放大
-  static float filtered_omega_error[4] = {0.0f}; // 每个轮子独立滤波状态
+  // 浜岀骇婊ゆ尝鍑忓皯鍣０鏀惧ぇ
+  static float filtered_omega_error[4] = {
+      0.0f}; // 姣忎釜杞瓙鐙珛婊ゆ尝鐘舵€�
   omega_error = LowPassFilter_Float(omega_error,
                                     chassis_config.force.omega_error_lpf_alpha,
                                     &filtered_omega_error[motor_index]);
 
-  // 过零保护：低速时减少补偿避免震荡
-  // 修复：改为"或"逻辑，只要任一个接近零就不补偿（防止滤波器滞后导致的方向变化误判）
+  // 杩囬浂淇濇姢锛氫綆閫熸椂鍑忓皯琛ュ伩閬垮厤闇囪崱
+  // 淇锛氭敼涓�"鎴�"閫昏緫锛屽彧瑕佷换涓€涓帴杩戦浂灏变笉琛ュ伩锛堥槻姝㈡护娉㈠櫒婊炲悗瀵艰嚧鐨勬柟鍚戝彉鍖栬鍒わ級
   if (fabsf(target_omega) < chassis_config.force.omega_threshold ||
       fabsf(actual_omega) < chassis_config.force.omega_threshold) {
     return 0.0f;
   }
 
-  // 方向变化时使用弱补偿（注意：此时已经排除了低速场景）
+  // 鏂瑰悜鍙樺寲鏃朵娇鐢ㄥ急琛ュ伩锛堟敞鎰忥細姝ゆ椂宸茬粡鎺掗櫎浜嗕綆閫熷満鏅級
   if (target_omega * actual_omega < 0.0f) {
     return 0.05f * chassis_config.force.wheel_speed_feedback_coeff *
            omega_error;
   }
 
-  // 正常速度反馈
+  // 姝ｅ父閫熷害鍙嶉
   return chassis_config.force.wheel_speed_feedback_coeff * omega_error;
 }
 
 /**
- * @brief 计算摩擦补偿电流
- * @param target_omega 目标角速度 (rad/s)
- * @return 摩擦补偿电流 (A)
- * @detail 使用tanh函数实现平滑过渡，避免阶跃不连续性
+ * @brief 璁＄畻鎽╂摝琛ュ伩鐢垫祦
+ * @param target_omega 鐩爣瑙掗€熷害 (rad/s)
+ * @return 鎽╂摝琛ュ伩鐢垫祦 (A)
+ * @detail 浣跨敤tanh鍑芥暟瀹炵幇骞虫粦杩囨浮锛岄伩鍏嶉樁璺冧笉杩炵画鎬�
  */
 static inline float CalculateFrictionCompensation(float target_omega) {
-  // tanh函数在±3范围内近似线性，超出则饱和
+  // tanh鍑芥暟鍦�3鑼冨洿鍐呰繎浼肩嚎鎬э紝瓒呭嚭鍒欓ケ鍜�
   float normalized_speed =
       target_omega / chassis_config.force.friction_threshold_omega;
   float smooth_factor = tanhf(normalized_speed);
 
-  // 动摩擦 + 平滑的静摩擦补偿
+  // 鍔ㄦ懇鎿� + 骞虫粦鐨勯潤鎽╂摝琛ュ伩
   return FRICTION_DYNAMIC_CURRENT +
          smooth_factor * (FRICTION_STATIC_CURRENT - FRICTION_DYNAMIC_CURRENT);
 }
 
 /**
- * @brief 力→电流转换（重构版）
+ * @brief 鍔涒啋鐢垫祦杞崲锛堥噸鏋勭増锛�
  *
- * 处理流程：
- * 1. 基础力→电流转换
- * 2. 速度反馈补偿
- * 3. 摩擦补偿
- * 4. 限幅保护
+ * 澶勭悊娴佺▼锛�
+ * 1. 鍩虹鍔涒啋鐢垫祦杞崲
+ * 2. 閫熷害鍙嶉琛ュ伩
+ * 3. 鎽╂摝琛ュ伩
+ * 4. 闄愬箙淇濇姢
  */
 static void ForceToCurrentConversion(void) {
-  // 电机数组（不能使用static const，因为motor_lf等是运行时初始化的）
+  // 鐢垫満鏁扮粍锛堜笉鑳戒娇鐢╯tatic
+  // const锛屽洜涓簃otor_lf绛夋槸杩愯鏃跺垵濮嬪寲鐨勶級
   DJIMotorInstance *motors[4] = {motor_lf, motor_rf, motor_lb, motor_rb};
 
-  // 预计算转换系数，避免重复计算
+  // 棰勮绠楄浆鎹㈢郴鏁帮紝閬垮厤閲嶅璁＄畻
   static const float force_to_current = RADIUS_WHEEL / M3508_TORQUE_CONSTANT;
 
   for (int i = 0; i < 4; i++) {
-    /* ===== 步骤1：基础力→电流转换 ===== */
-    // 公式：电流 = 力 × 半径 / 转矩常数
+    /* ===== 姝ラ1锛氬熀纭€鍔涒啋鐢垫祦杞崲 ===== */
+    // 鍏紡锛氱數娴� = 鍔� 脳 鍗婂緞 / 杞煩甯告暟
     float base_current = wheel_force[i] * force_to_current;
 
-    /* ===== 步骤2：获取实际角速度 ===== */
+    /* ===== 姝ラ2锛氳幏鍙栧疄闄呰閫熷害 ===== */
     float actual_omega = (i == 0 || i == 3)
                              ? -motors[i]->measure.speed_aps * DEGREE_2_RAD
                              : motors[i]->measure.speed_aps * DEGREE_2_RAD;
 
-    /* ===== 步骤3：速度反馈补偿 ===== */
+    /* ===== 姝ラ3锛氶€熷害鍙嶉琛ュ伩 ===== */
     float speed_feedback =
         CalculateSpeedFeedback(target_wheel_omega[i], actual_omega, i);
 
-    /* ===== 步骤4：摩擦补偿 ===== */
+    /* ===== 姝ラ4锛氭懇鎿﹁ˉ鍋� ===== */
     float friction_comp = CalculateFrictionCompensation(target_wheel_omega[i]);
 
-    /* ===== 步骤5：合成总电流 ===== */
+    /* ===== 姝ラ5锛氬悎鎴愭€荤數娴� ===== */
     wheel_current[i] = base_current + speed_feedback + friction_comp;
 
-    /* ===== 步骤6：限幅保护 ===== */
+    /* ===== 姝ラ6锛氶檺骞呬繚鎶� ===== */
     wheel_current[i] = float_constrain(wheel_current[i], -MAX_WHEEL_CURRENT,
                                        MAX_WHEEL_CURRENT);
   }
 }
 
-/* 机器人底盘控制核心任务 */
+/* 鏈哄櫒浜哄簳鐩樻帶鍒舵牳蹇冧换鍔� */
 void ChassisTask() {
 #if ENABLE_CHASSIS_SYSID
-  // 系统辨识宏开关触发（ENABLE_CHASSIS_SYSID=1时有效）
+  // 绯荤粺杈ㄨ瘑瀹忓紑鍏宠Е鍙戯紙ENABLE_CHASSIS_SYSID=1鏃舵湁鏁堬級
   ChassisSystemIDSwitch();
 #endif
 
-  // 检查系统辨识是否激活
+  // 妫€鏌ョ郴缁熻鲸璇嗘槸鍚︽縺娲�
   if (Chassis_SysIDIsActive()) {
-    // 系统辨识激活时，完全由辨识任务控制电机
-    // 底盘控制任务不干预，直接返回
+    // 绯荤粺杈ㄨ瘑婵€娲绘椂锛屽畬鍏ㄧ敱杈ㄨ瘑浠诲姟鎺у埗鐢垫満
+    // 搴曠洏鎺у埗浠诲姟涓嶅共棰勶紝鐩存帴杩斿洖
     return;
   }
 
-  // 后续增加没收到消息的处理(双板的情况)
-  // 获取新的控制信息
+  // 鍚庣画澧炲姞娌℃敹鍒版秷鎭殑澶勭悊(鍙屾澘鐨勬儏鍐�)
+  // 鑾峰彇鏂扮殑鎺у埗淇℃伅
 #ifdef ONE_BOARD
   SubGetMessage(chassis_sub, &chassis_cmd_recv);
 #endif
@@ -599,60 +626,62 @@ void ChassisTask() {
   chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chasiss_can_comm);
 #endif // CHASSIS_BOARD
 
-  // === 应用遥控器速度增益 ===
-  // 从Gimbal接收到的vx/vy是归一化值(-1.0~1.0)
-  // 需要乘以增益转换为实际速度(m/s)
+  // === 搴旂敤閬ユ帶鍣ㄩ€熷害澧炵泭 ===
+  // 浠嶨imbal鎺ユ敹鍒扮殑vx/vy鏄綊涓€鍖栧€�(-1.0~1.0)
+  // 闇€瑕佷箻浠ュ鐩婅浆鎹负瀹為檯閫熷害(m/s)
   chassis_cmd_recv.vx *= chassis_config.rc.max_linear_speed;
   chassis_cmd_recv.vy *= chassis_config.rc.max_linear_speed;
-  // 注意: wz(角速度)由底盘根据模式自动设定，不需要在这里处理
+  // 娉ㄦ剰:
+  // wz(瑙掗€熷害)鐢卞簳鐩樻牴鎹ā寮忚嚜鍔ㄨ瀹氾紝涓嶉渶瑕佸湪杩欓噷澶勭悊
 
   if (chassis_cmd_recv.chassis_mode ==
-      CHASSIS_ZERO_FORCE) { // 如果出现重要模块离线或遥控器设置为急停,让电机停止
+      CHASSIS_ZERO_FORCE) { // 濡傛灉鍑虹幇閲嶈妯″潡绂荤嚎鎴栭仴鎺у櫒璁剧疆涓烘€ュ仠,璁╃數鏈哄仠姝�
     DJIMotorStop(motor_lf);
     DJIMotorStop(motor_rf);
     DJIMotorStop(motor_lb);
     DJIMotorStop(motor_rb);
-  } else { // 正常工作
+  } else { // 姝ｅ父宸ヤ綔
     DJIMotorEnable(motor_lf);
     DJIMotorEnable(motor_rf);
     DJIMotorEnable(motor_lb);
     DJIMotorEnable(motor_rb);
   }
 
-  // 根据控制模式设定旋转速度
+  // 鏍规嵁鎺у埗妯″紡璁惧畾鏃嬭浆閫熷害
   switch (chassis_cmd_recv.chassis_mode) {
-  case CHASSIS_NO_FOLLOW: // 底盘不旋转,但维持全向机动,一般用于调整云台姿态
+  case CHASSIS_NO_FOLLOW: // 搴曠洏涓嶆棆杞�,浣嗙淮鎸佸叏鍚戞満鍔�,涓€鑸敤浜庤皟鏁翠簯鍙板Э鎬�
     chassis_cmd_recv.wz = 0;
-    last_follow_wz = 0; // 重置滤波状态
+    last_follow_wz = 0; // 閲嶇疆婊ゆ尝鐘舵€�
     break;
 
-  case CHASSIS_FOLLOW_GIMBAL_YAW: { // 跟随云台,统一力控链路
-    // PID输出目标角速度（rad/s）
-    // 统一进入力控PID转换为扭矩
-    // 输入：角度误差（度）
-    // 输出：目标角速度（rad/s）
+  case CHASSIS_FOLLOW_GIMBAL_YAW: { // 璺熼殢浜戝彴,缁熶竴鍔涙帶閾捐矾
+    // PID杈撳嚭鐩爣瑙掗€熷害锛坮ad/s锛�
+    // 缁熶竴杩涘叆鍔涙帶PID杞崲涓烘壄鐭�
+    // 杈撳叆锛氳搴﹁宸紙搴︼級
+    // 杈撳嚭锛氱洰鏍囪閫熷害锛坮ad/s锛�
     float follow_angular_vel = -PIDCalculate(
         &chassis_follow_pid, chassis_cmd_recv.near_center_error, 0.0f);
 
-    // 一阶滤波器平滑（修复：使用全局静态变量，不再重复定义）
+    // 涓€闃舵护娉㈠櫒骞虫粦锛堜慨澶嶏細浣跨敤鍏ㄥ眬闈欐€佸彉閲忥紝涓嶅啀閲嶅瀹氫箟锛�
     chassis_cmd_recv.wz = LowPassFilter_Float(
         follow_angular_vel, chassis_config.kinematics.follow_lpf_alpha,
         &last_follow_wz);
-    // wz统一为角速度（rad/s），后续通过chassis_torque_pid转换为扭矩
+    // wz缁熶竴涓鸿閫熷害锛坮ad/s锛夛紝鍚庣画閫氳繃chassis_torque_pid杞崲涓烘壄鐭�
     break;
   }
 
-  case CHASSIS_ROTATE: // 自旋,同时保持全向机动;当前wz维持定值,后续增加不规则的变速策略
+  case CHASSIS_ROTATE: // 鑷棆,鍚屾椂淇濇寔鍏ㄥ悜鏈哄姩;褰撳墠wz缁存寔瀹氬€�,鍚庣画澧炲姞涓嶈鍒欑殑鍙橀€熺瓥鐣�
     chassis_cmd_recv.wz = chassis_config.kinematics.rotate_speed; // rad/s
-    last_follow_wz = chassis_cmd_recv.wz; // 保存当前wz,便于切换后平滑过渡
+    last_follow_wz =
+        chassis_cmd_recv.wz; // 淇濆瓨褰撳墠wz,渚夸簬鍒囨崲鍚庡钩婊戣繃娓�
     break;
 
   default:
     break;
   }
 
-  // 根据云台和底盘的角度offset将控制量映射到底盘坐标系上
-  // 底盘逆时针旋转为角度正方向;云台命令的方向以云台指向的方向为x,采用右手系(x指向正北时y在正东)
+  // 鏍规嵁浜戝彴鍜屽簳鐩樼殑瑙掑害offset灏嗘帶鍒堕噺鏄犲皠鍒板簳鐩樺潗鏍囩郴涓�
+  // 搴曠洏閫嗘椂閽堟棆杞负瑙掑害姝ｆ柟鍚�;浜戝彴鍛戒护鐨勬柟鍚戜互浜戝彴鎸囧悜鐨勬柟鍚戜负x,閲囩敤鍙虫墜绯�(x鎸囧悜姝ｅ寳鏃秠鍦ㄦ涓�)
   static float sin_theta, cos_theta;
   cos_theta = arm_cos_f32(chassis_cmd_recv.offset_angle * DEGREE_2_RAD);
   sin_theta = arm_sin_f32(chassis_cmd_recv.offset_angle * DEGREE_2_RAD);
@@ -661,87 +690,153 @@ void ChassisTask() {
   chassis_vy =
       chassis_cmd_recv.vx * sin_theta + chassis_cmd_recv.vy * cos_theta;
 
-  /* ================== 力控策略控制流程 ================== */
-  // 参考robowalker的力控思想，实现从速度到电流的完整链路
+  /* ================== 鍔涙帶绛栫暐鎺у埗娴佺▼ ================== */
+  // 鍙傝€價obowalker鐨勫姏鎺ф€濇兂锛屽疄鐜颁粠閫熷害鍒扮數娴佺殑瀹屾暣閾捐矾
 
-  // 0. 正运动学解算：计算各轮目标角速度（用于速度内环）
-  //    robowalker的关键：提供轮速目标值用于动态补偿
+  // 0.
+  // 姝ｈ繍鍔ㄥ瑙ｇ畻锛氳绠楀悇杞洰鏍囪閫熷害锛堢敤浜庨€熷害鍐呯幆锛�
+  //    robowalker鐨勫叧閿細鎻愪緵杞€熺洰鏍囧€肩敤浜庡姩鎬佽ˉ鍋�
   MecanumKinematicsCalculate();
 
-  // 1. 速度闭环 → 力/扭矩 (力控核心环节1)
-  //    速度控制器输出的不是速度参考值，而是需要的合力和合扭矩
-  //    统一处理：所有模式的wz（角速度）都通过chassis_torque_pid转换为扭矩
+  // 1. 閫熷害闂幆 鈫� 鍔�/鎵煩
+  // (鍔涙帶鏍稿績鐜妭1)
+  //    閫熷害鎺у埗鍣ㄨ緭鍑虹殑涓嶆槸閫熷害鍙傝€冨€硷紝鑰屾槸闇€瑕佺殑鍚堝姏鍜屽悎鎵煩
+  //    缁熶竴澶勭悊锛氭墍鏈夋ā寮忕殑wz锛堣閫熷害锛夐兘閫氳繃chassis_torque_pid杞崲涓烘壄鐭�
   VelocityToForceControl();
 
-  // 2. 力的动力学逆解算 (力控核心环节2)
-  //    将底盘合力分配到各个轮子
+  // 2. 鍔涚殑鍔ㄥ姏瀛﹂€嗚В绠� (鍔涙帶鏍稿績鐜妭2)
+  //    灏嗗簳鐩樺悎鍔涘垎閰嶅埌鍚勪釜杞瓙
   ForceDynamicsInverseResolution();
 
-  // 3. 力→电流转换 + 速度内环 + 摩擦补偿 (力控核心环节3)
-  //    robowalker核心：base_current + speed_feedback + friction_comp
+  // 3. 鍔涒啋鐢垫祦杞崲 + 閫熷害鍐呯幆 + 鎽╂摝琛ュ伩
+  // (鍔涙帶鏍稿績鐜妭3)
+  //    robowalker鏍稿績锛歜ase_current + speed_feedback + friction_comp
   ForceToCurrentConversion();
 
-  // 4. 下发电机电流指令
-  //    注意：这里直接使用wheel_current数组，单位为安培(A)
-  //    需要转换为CAN指令值：cmd = current / M3508_CMD_TO_CURRENT_COEFF
+#if POWER_CONTROLLER_ENABLE
+  // 4.
+  // 鍔熺巼闄愬埗锛堝繀椤诲湪鍙戦€佺數鏈烘寚浠ゅ墠鎵ц锛�
+  // 4.1 鑾峰彇瓒呯骇鐢靛鏁版嵁
+  SuperCap_Rx_Data_s cap_rx_data = SuperCapGetData(cap);
+
+  // 4.2
+  // 鏇存柊鍔熺巼鎺у埗鍣ㄦ暟鎹紙鏆傛椂鏃犺鍒ょ郴缁燂紝浣跨敤瓒呯骇鐢靛鏁版嵁锛�
+  // 鎵嬪姩璁惧畾鍔熺巼闄愬埗锛堟牴鎹疄闄呮祴璇曡皟鏁达紝鍗曚綅锛歐锛�
+  float manual_power_limit = 95.0f;
+
+  // 浣跨敤瓒呯骇鐢靛娴嬮噺鐨勬暟鎹�
+  float cap_energy_buffer =
+      (float)cap_rx_data.cap_energy; // 鐢靛鑳介噺 (0-255)
+  float measured_power = cap_rx_data.chassis_power; // 搴曠洏鍔熺巼 (W)
+
+  PowerUpdateRefereeData(manual_power_limit, cap_energy_buffer, measured_power);
+
+  // 4.3 鏇存柊瓒呯骇鐢靛鍦ㄧ嚎鐘舵€�
+  // 鍦ㄧ嚎鍒ゆ柇锛欳AN鏈夋暟鎹� 涓�
+  // 閿欒鐮乥it7=0锛堣緭鍑烘湭鍏抽棴锛�
+  uint8_t cap_online =
+      (cap->can_ins->rx_len > 0 && (cap_rx_data.error_code & 0x80) == 0) ? 1
+                                                                         : 0;
+  PowerUpdateCapData(cap_rx_data.cap_energy, cap_online);
+
+  // 4.4
+  // 鏇存柊鐢垫満鍙嶉鏁版嵁锛堢敤浜嶳LS鍙傛暟杈ㄨ瘑锛�
+  // 鈿狅笍 閲忕翰缁熶竴鍒拌緭鍑鸿酱渚э紙涓庡姏鎺у簳鐩樹竴鑷达級
+  // 杈撳嚭杞磋閫熷害 = 杞瓙瑙掗€熷害 / 鍑忛€熸瘮
+  float motor_speeds[4] = {
+      motor_lf->measure.speed_aps * DEGREE_2_RAD / REDUCTION_RATIO_WHEEL,
+      motor_rf->measure.speed_aps * DEGREE_2_RAD / REDUCTION_RATIO_WHEEL,
+      motor_lb->measure.speed_aps * DEGREE_2_RAD / REDUCTION_RATIO_WHEEL,
+      motor_rb->measure.speed_aps * DEGREE_2_RAD / REDUCTION_RATIO_WHEEL,
+  };
+
+  // 浣跨敤鐢垫満瀹炴祴鐢垫祦鍙嶉璁＄畻杞煩锛堣€岄潪鎺у埗鎸囦护锛�
+  // 杩欏RLS鍙傛暟杈ㄨ瘑鑷冲叧閲嶈锛氬繀椤讳娇鐢ㄧ湡瀹炴秷鑰楃殑鐢垫祦锛岃€岄潪鏈熸湜鎸囦护
+  // real_current鑼冨洿锛�-16384~16384锛岄渶涔樹互M3508_CMD_TO_CURRENT_COEFF杞崲涓哄畨鍩�
+  // 鈿狅笍
+  // 浣跨敤杈撳嚭杞磋浆鐭╁父鏁帮紙涓巑otor_speeds鐨勮緭鍑鸿酱瑙掗€熷害鍖归厤锛�
+  const float TORQUE_CONSTANT =
+      M3508_TORQUE_CONSTANT; // 0.3 Nm/A锛堣緭鍑鸿酱锛�
+  float motor_torques[4] = {
+      motor_lf->measure.real_current * M3508_CMD_TO_CURRENT_COEFF *
+          TORQUE_CONSTANT,
+      motor_rf->measure.real_current * M3508_CMD_TO_CURRENT_COEFF *
+          TORQUE_CONSTANT,
+      motor_lb->measure.real_current * M3508_CMD_TO_CURRENT_COEFF *
+          TORQUE_CONSTANT,
+      motor_rb->measure.real_current * M3508_CMD_TO_CURRENT_COEFF *
+          TORQUE_CONSTANT,
+  };
+  PowerUpdateMotorFeedback(motor_speeds, motor_torques);
+
+  // 4.5 鎵ц鑳介噺鐜帶鍒跺拰RLS鏇存柊
+  PowerControllerTask();
+
+  // 4.6 鍔熺巼闄愬埗锛氬鐢垫祦杩涜闄愬箙
+  // 鈿狅笍 閲忕翰璇存槑锛�
+  //   - target_wheel_omega 鏄洰鏍囪浆瀛愯閫熷害(rad/s)
+  //   - motor_speeds 鏄綋鍓嶈緭鍑鸿酱瑙掗€熷害(rad/s)
+  //   -
+  //   鍔熺巼鎺у埗鍣ㄩ渶瑕佺粺涓€閲忕翰锛岄兘杞崲涓鸿緭鍑鸿酱瑙掗€熷害
+  PowerMotorObj_t motor_objs[4] = {
+      {.pid_output = wheel_current[0] / M3508_CMD_TO_CURRENT_COEFF,
+       .current_av = motor_speeds[0],
+       .target_av = target_wheel_omega[0] / REDUCTION_RATIO_WHEEL,
+       .pid_max_output = 16384.0f},
+      {.pid_output = wheel_current[1] / M3508_CMD_TO_CURRENT_COEFF,
+       .current_av = motor_speeds[1],
+       .target_av = target_wheel_omega[1] / REDUCTION_RATIO_WHEEL,
+       .pid_max_output = 16384.0f},
+      {.pid_output = wheel_current[2] / M3508_CMD_TO_CURRENT_COEFF,
+       .current_av = motor_speeds[2],
+       .target_av = target_wheel_omega[2] / REDUCTION_RATIO_WHEEL,
+       .pid_max_output = 16384.0f},
+      {.pid_output = wheel_current[3] / M3508_CMD_TO_CURRENT_COEFF,
+       .current_av = motor_speeds[3],
+       .target_av = target_wheel_omega[3] / REDUCTION_RATIO_WHEEL,
+       .pid_max_output = 16384.0f},
+  };
+  float limited_output[4];
+  PowerGetLimitedOutput(motor_objs, limited_output);
+
+  // 5. 涓嬪彂鐢垫満鐢垫祦鎸囦护锛堜娇鐢ㄥ姛鐜囬檺鍒跺悗鐨勫€硷級
+  DJIMotorSetRef(motor_lf, limited_output[0]);
+  DJIMotorSetRef(motor_rf, limited_output[1]);
+  DJIMotorSetRef(motor_lb, limited_output[2]);
+  DJIMotorSetRef(motor_rb, limited_output[3]);
+#else
+  // 5. 涓嬪彂鐢垫満鐢垫祦鎸囦护锛堟棤鍔熺巼闄愬埗锛�
+  //    娉ㄦ剰锛氳繖閲岀洿鎺ヤ娇鐢╳heel_current鏁扮粍锛屽崟浣嶄负瀹夊煿(A)
+  //    闇€瑕佽浆鎹负CAN鎸囦护鍊硷細cmd = current /
+  //    M3508_CMD_TO_CURRENT_COEFF
   DJIMotorSetRef(motor_lf, wheel_current[0] / M3508_CMD_TO_CURRENT_COEFF);
   DJIMotorSetRef(motor_rf, wheel_current[1] / M3508_CMD_TO_CURRENT_COEFF);
   DJIMotorSetRef(motor_lb, wheel_current[2] / M3508_CMD_TO_CURRENT_COEFF);
   DJIMotorSetRef(motor_rb, wheel_current[3] / M3508_CMD_TO_CURRENT_COEFF);
-
-#if POWER_CONTROLLER_ENABLE
-  // 4.5. 更新功率控制器数据（在功率限制前更新）
-  // 更新裁判系统数据
-  if (referee_data) {
-    PowerUpdateRefereeData(
-        (float)referee_data->GameRobotState.chassis_power_limit,
-        (float)referee_data->PowerHeatData.buffer_energy,
-        (float)referee_data->PowerHeatData.chassis_power);
-  }
-
-  // 更新超级电容数据
-  uint8_t cap_online = (cap && cap->can_ins->rx_len > 0) ? 1 : 0;
-  uint8_t cap_voltage = cap_online ? cap->cap_msg.vol : 0;
-  PowerUpdateCapData(cap_voltage, cap_online);
-
-  // 更新电机反馈数据（用于RLS参数辨识）
-  float motor_speeds[4] = {
-      motor_lf->measure.speed_aps * DEGREE_2_RAD,
-      motor_rf->measure.speed_aps * DEGREE_2_RAD,
-      motor_lb->measure.speed_aps * DEGREE_2_RAD,
-      motor_rb->measure.speed_aps * DEGREE_2_RAD,
-  };
-
-  // 估算电机转矩（通过下发电流转换）
-  const float TORQUE_CONSTANT = 0.3f; // Nm/A
-  float motor_torques[4] = {
-      wheel_current[0] * TORQUE_CONSTANT,
-      wheel_current[1] * TORQUE_CONSTANT,
-      wheel_current[2] * TORQUE_CONSTANT,
-      wheel_current[3] * TORQUE_CONSTANT,
-  };
-  PowerUpdateMotorFeedback(motor_speeds, motor_torques);
 #endif
 
-  // 5. 根据裁判系统的反馈数据和电容数据对输出限幅并设定闭环参考值
-  // LimitChassisOutput();  // 力控策略中已在ForceToCurrentConversion中完成限幅
+  // 5.
+  // 鏍规嵁瑁佸垽绯荤粺鐨勫弽棣堟暟鎹拰鐢靛鏁版嵁瀵硅緭鍑洪檺骞呭苟璁惧畾闂幆鍙傝€冨€�
+  // LimitChassisOutput();  //
+  // 鍔涙帶绛栫暐涓凡鍦‵orceToCurrentConversion涓畬鎴愰檺骞�
 
-  // 6. 根据电机的反馈速度和IMU(如果有)计算真实速度
+  // 6. 鏍规嵁鐢垫満鐨勫弽棣堥€熷害鍜孖MU(濡傛灉鏈�)璁＄畻鐪熷疄閫熷害
   // EstimateSpeed();
 
-  // // 获取裁判系统数据
-  // 建议将裁判系统与底盘分离，所以此处数据应使用消息中心发送
-  // // 我方颜色id小于7是红色,大于7是蓝色,注意这里发送的是对方的颜色, 0:blue ,
-  // 1:red chassis_feedback_data.enemy_color =
+  // // 鑾峰彇瑁佸垽绯荤粺鏁版嵁
+  // 寤鸿灏嗚鍒ょ郴缁熶笌搴曠洏鍒嗙锛屾墍浠ユ澶勬暟鎹簲浣跨敤娑堟伅涓績鍙戦€�
+  // //
+  // 鎴戞柟棰滆壊id灏忎簬7鏄孩鑹�,澶т簬7鏄摑鑹�,娉ㄦ剰杩欓噷鍙戦€佺殑鏄鏂圭殑棰滆壊,
+  // 0:blue , 1:red chassis_feedback_data.enemy_color =
   // referee_data->GameRobotState.robot_id > 7 ? 1 : 0;
   // //
-  // 当前只做了17mm热量的数据获取,后续根据robot_def中的宏切换双枪管和英雄42mm的情况
+  // 褰撳墠鍙仛浜�17mm鐑噺鐨勬暟鎹幏鍙�,鍚庣画鏍规嵁robot_def涓殑瀹忓垏鎹㈠弻鏋鍜岃嫳闆�42mm鐨勬儏鍐�
   // chassis_feedback_data.bullet_speed =
   // referee_data->GameRobotState.shooter_id1_17mm_speed_limit;
   // chassis_feedback_data.rest_heat =
   // referee_data->PowerHeatData.shooter_heat0;
 
-  // 推送反馈消息
+  // 鎺ㄩ€佸弽棣堟秷鎭�
 #ifdef ONE_BOARD
   PubPushMessage(chassis_pub, (void *)&chassis_feedback_data);
 #endif

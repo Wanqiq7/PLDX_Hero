@@ -4,8 +4,20 @@
 #include "bsp_usart.h"
 #include "seasky_protocol.h"
 
-#define VISION_RECV_SIZE 18u // 当前为固定值,36字节
-#define VISION_SEND_SIZE 36u
+/* CAN视觉通信配置 */
+#define VISION_CAN_CTRL_ID 0xff  // 云台控制指令CAN ID（默认值）
+
+/**
+ * @brief 视觉模块初始化配置结构体
+ * @note 参考DJI电机模块的设计模式，提供灵活的配置接口
+ *       支持双向通信：接收视觉控制指令(rx_id)和发送IMU四元数(tx_id)
+ */
+typedef struct {
+    CAN_HandleTypeDef *can_handle;  // CAN总线句柄 (hcan1/hcan2)
+    uint16_t rx_id;                 // 视觉控制帧接收ID (通常为0xff)
+    uint16_t tx_id;                 // 四元数发送ID (推荐0x100)
+    uint16_t reload_count;          // 离线检测超时计数 (默认10 = 100ms @ 10ms daemon周期)
+} Vision_Init_Config_s;
 
 #pragma pack(1)
 typedef enum
@@ -45,6 +57,17 @@ typedef struct
 	float yaw;
 } Vision_Recv_s;
 
+/* CAN视觉数据结构（对应0xff帧） */
+typedef struct
+{
+	uint8_t control;          // 控制标志
+	uint8_t shoot;            // 射击标志
+	float yaw;                // yaw角度
+	float pitch;              // pitch角度
+	float horizon_distance;   // 水平距离
+} Vision_CAN_Ctrl_s;
+
+/* 保留枚举定义（robot_def.h中使用） */
 typedef enum
 {
 	COLOR_NONE = 0,
@@ -68,47 +91,35 @@ typedef enum
 	SMALL_AMU_18 = 18,
 	SMALL_AMU_30 = 30,
 } Bullet_Speed_e;
-
-typedef struct
-{
-	Enemy_Color_e enemy_color;
-	Work_Mode_e work_mode;
-	Bullet_Speed_e bullet_speed;
-
-	float yaw;
-	float pitch;
-	float roll;
-} Vision_Send_s;
 #pragma pack()
 
 /**
- * @brief 调用此函数初始化和视觉的串口通信
+ * @brief 初始化视觉CAN通信模块
+ * @note 参考DJI电机模块的初始化模式，使用配置结构体
  *
- * @param handle 用于和视觉通信的串口handle(C板上一般为USART1,丝印为USART2,4pin)
+ * @param config 视觉模块初始化配置结构体指针
+ * @return Vision_Recv_s* 返回视觉接收数据指针
  */
-Vision_Recv_s *VisionInit(UART_HandleTypeDef *_handle);
+Vision_Recv_s *VisionInit(Vision_Init_Config_s *config);
 
 /**
- * @brief 发送视觉数据
+ * @brief 查询视觉模块在线状态
  *
+ * @return uint8_t 1-在线，0-离线或未初始化
  */
-void VisionSend();
+uint8_t VisionIsOnline(void);
 
 /**
- * @brief 设置视觉发送标志位
+ * @brief 发送四元数数据到视觉小电脑
+ * @note 使用int16压缩编码，单帧8字节传输，大端序
+ *       数据格式: [qx_high, qx_low, qy_high, qy_low, qz_high, qz_low, qw_high, qw_low]
+ *       解码公式: float = int16_val / 32767.0f
  *
- * @param enemy_color
- * @param work_mode
- * @param bullet_speed
+ * @param x 四元数x分量 (范围[-1, 1])
+ * @param y 四元数y分量 (范围[-1, 1])
+ * @param z 四元数z分量 (范围[-1, 1])
+ * @param w 四元数w分量 (范围[-1, 1])
  */
-void VisionSetFlag(Enemy_Color_e enemy_color, Work_Mode_e work_mode, Bullet_Speed_e bullet_speed);
-
-/**
- * @brief 设置发送数据的姿态部分
- *
- * @param yaw
- * @param pitch
- */
-void VisionSetAltitude(float yaw, float pitch, float roll);
+void VisionSendQuaternion(float x, float y, float z, float w);
 
 #endif // !MASTER_PROCESS_H

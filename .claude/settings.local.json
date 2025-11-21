@@ -1,3 +1,16 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(mv:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(find:*)",
+      "Bash(dir /B /S \"D:\\RoboMaster\\HeroCode\\Hero\")",
+      "Bash(findstr:*)",
+      "Bash(if not exist \"D:\\RoboMaster\\HeroCode\\Hero\\.claude\" mkdir \"D:\\RoboMaster\\HeroCode\\Hero\\.claude\")",
+      "Bash(if not exist cmake-build-debug mkdir cmake-build-debug)",
+      "Bash(bash:*)"
+    ]
+  },
   "outputStyle": "codex"
 }

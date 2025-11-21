@@ -17,6 +17,7 @@
 #include "gimbal.h"
 #include "shoot.h"
 #include "robot_cmd.h"
+#include "vision.h"
 #endif
 
 
@@ -30,6 +31,7 @@ void RobotInit()
     BSPInit();
 
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+    VisionAppInit();  // 视觉应用初始化(在cmd之前,因为cmd会订阅vision数据)
     RobotCMDInit();
     GimbalInit();
     ShootInit();
@@ -48,6 +50,7 @@ void RobotInit()
 void RobotTask()
 {
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+    VisionAppTask();  // 视觉数据处理(在cmd之前执行)
     RobotCMDTask();
     GimbalTask();
     ShootTask();

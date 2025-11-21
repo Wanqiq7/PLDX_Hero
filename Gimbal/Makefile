@@ -153,6 +153,7 @@ modules/alarm/buzzer.c \
 application/gimbal/gimbal.c \
 application/chassis/chassis.c \
 application/shoot/shoot.c \
+application/vision/vision.c \
 application/cmd/robot_cmd.c \
 application/sysid/sysid_task.c \
 application/robot.c
@@ -232,6 +233,7 @@ C_INCLUDES =  \
 -Iapplication/chassis \
 -Iapplication/shoot \
 -Iapplication/gimbal \
+-Iapplication/vision \
 -Iapplication/cmd \
 -Iapplication/sysid \
 -Iapplication \

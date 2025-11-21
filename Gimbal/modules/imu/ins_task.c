@@ -170,8 +170,6 @@ void INS_Task(void) {
     // 同步弧度制数据
     INS.Pitch_rad = QEKF_INS.Pitch_rad;
     INS.YawTotalAngle_rad = QEKF_INS.YawTotalAngle_rad;
-
-    VisionSetAltitude(INS.Yaw, INS.Pitch, INS.Roll);
   }
 
   // temperature control

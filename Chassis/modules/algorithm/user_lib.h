@@ -31,7 +31,7 @@
 #define mcos(x) (arm_cos_f32(x))
 
 typedef arm_matrix_instance_f32 mat;
-// 鑻ヨ繍绠楅€熷害涓嶅,鍙互浣跨敤q31浠ｆ浛f32,浣嗘槸绮惧害浼氶檷浣�
+// 閼汇儴绻嶇粻妤呪偓鐔峰娑撳秴顧�,閸欘垯浜掓担璺ㄦ暏q31娴狅絾娴沠32,娴ｅ棙妲哥划鎯у娴兼岸妾锋担锟�
 #define MatAdd arm_mat_add_f32
 #define MatSubtract arm_mat_sub_f32
 #define MatMultiply arm_mat_mult_f32
@@ -79,28 +79,28 @@ void MatInit(mat *m, uint8_t row, uint8_t col);
 
 /**
  * @brief
- * 杩斿洖涓€鍧楀共鍑€鐨勫唴锟�?,涓嶈繃浠嶇劧闇€瑕佸己鍒惰浆锟�?涓轰綘闇€瑕佺殑绫诲瀷
+ * 鏉╂柨娲栨稉鈧崸妤€鍏遍崙鈧惃鍕敶閿燂拷?,娑撳秷绻冩禒宥囧姧闂団偓鐟曚礁宸遍崚鎯版祮閿燂拷?娑撹桨缍橀棁鈧憰浣烘畱缁鐎�
  *
- * @param size 鍒嗛厤澶у皬
+ * @param size 閸掑棝鍘ゆ径褍鐨�
  * @return void*
  */
 void *zmalloc(size_t size);
 
-// 锟斤拷锟劫匡拷锟斤拷
+// 閿熸枻鎷烽敓鍔尅鎷烽敓鏂ゆ嫹
 float Sqrt(float x);
-// 锟斤拷锟斤拷锟斤拷锟斤拷
+// 閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹
 float abs_limit(float num, float Limit);
-// 锟叫断凤拷锟斤拷位
+// 閿熷彨鏂嚖鎷烽敓鏂ゆ嫹浣�
 float sign(float value);
-// 锟斤拷锟斤拷锟斤拷锟斤拷
+// 閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹
 float float_deadband(float Value, float minValue, float maxValue);
-// 锟睫凤拷锟斤拷锟斤拷
+// 閿熺潾鍑ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹
 float float_constrain(float Value, float minValue, float maxValue);
-// 锟睫凤拷锟斤拷锟斤拷
+// 閿熺潾鍑ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹
 int16_t int16_constrain(int16_t Value, int16_t minValue, int16_t maxValue);
-// 循锟斤拷锟睫凤拷锟斤拷锟斤拷
+// 寰敓鏂ゆ嫹閿熺潾鍑ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹
 float loop_float_constrain(float Input, float minValue, float maxValue);
-// 锟角讹拷 锟斤拷锟睫凤拷 180 ~ -180
+// 閿熻璁规嫹 閿熸枻鎷烽敓鐫嚖鎷� 180 ~ -180
 float theta_format(float Ang);
 
 int float_rounding(float raw);
@@ -123,7 +123,7 @@ float LowPassFilter_Float(float new_value, float K, float *last_value);
 
 #define rad_format(Ang) loop_float_constrain((Ang), -PI, PI)
 
-// 斜坡软规划公共接口
+// 鏂滃潯杞鍒掑叕鍏辨帴鍙�
 float SoftRamp(float target, float current, float reserved_zero, float accel,
                float decel, float brake_decel, float dt);
 

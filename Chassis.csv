@@ -1,0 +1,4 @@
+Level,Expression,Type,Value,Min,Max,Average,# Changes,Min. Change,Max. Change
+0,"(controller_status).k2","float",0.5,0.00100000005,1.20000005,0.453363061,"7 998",-0.700000048,0.499000013
+0,"(controller_status).k1","float",0.00999999978,0.00999999978,1,0.0327140801,"12 946",-0.4335742,0.99000001
+0,"((cap)->rx_data).chassis_power","float",6.80455828,-118.124893,505.473206,15.4825001,"97 386",-446.664551,432.240936

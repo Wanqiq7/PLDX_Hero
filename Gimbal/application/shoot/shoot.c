@@ -260,7 +260,7 @@ void ShootTask() {
 
     // 速度环控制：设置目标转速（单位：度/秒）
     // 调试阶段：先使用固定速度500°/s，调好后再改为动态计算
-    DJIMotorSetRef(loader, 4500); // 设置目标速度4500°/s
+    DJIMotorSetRef(loader, 1710); // 设置目标速度4500°/s
 
     // 动态计算公式（调好后启用）：
     // float target_speed = shoot_cmd_recv.shoot_rate * 360 *

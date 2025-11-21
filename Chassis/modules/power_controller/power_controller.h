@@ -12,27 +12,27 @@
 #ifndef POWER_CONTROLLER_H
 #define POWER_CONTROLLER_H
 
-#include "stdint.h"
 #include "controller.h"
+#include "stdint.h"
 
 /* ======================== 配置宏定义 ======================== */
 // 使能开关
-#define POWER_CONTROLLER_ENABLE 0   // 功率控制总开关
-#define RLS_ENABLE 0                // RLS参数辨识使能
+#define POWER_CONTROLLER_ENABLE 1 // 功率控制总开关
+#define RLS_ENABLE 1              // RLS参数辨识使能
 
 // 能量环PD控制器参数
-#define POWER_PD_KP 50.0f
-#define POWER_PD_KD 0.2f
+#define POWER_PD_KP 25.0f // 降低比例增益，减少超调
+#define POWER_PD_KD 0.0f  // 增加微分增益，增加阻尼
 
 // 功率分配参数
-#define ERROR_POWER_DISTRIBUTION_THRESHOLD 20.0f // error分配阈值上限
-#define PROP_POWER_DISTRIBUTION_THRESHOLD 15.0f  // error分配阈值下限
+#define ERROR_POWER_DISTRIBUTION_THRESHOLD 30.0f // error分配阈值上限
+#define PROP_POWER_DISTRIBUTION_THRESHOLD 20.0f  // error分配阈值下限
 
 // 电容和裁判系统状态
 #define REFEREE_FULL_BUFF 60.0f
-#define REFEREE_BASE_BUFF 50.0f
-#define CAP_FULL_BUFF 230.0f
-#define CAP_BASE_BUFF 30.0f
+#define REFEREE_BASE_BUFF 55.0f
+#define CAP_FULL_BUFF 235.0f
+#define CAP_BASE_BUFF 50.0f
 #define MAX_CAP_POWER_OUT 300.0f
 #define CAP_OFFLINE_THRESHOLD 43.0f
 
@@ -42,50 +42,50 @@
  * @brief 单个电机的功率对象
  */
 typedef struct {
-    float pid_output;     // PID输出（CAN指令值）
-    float current_av;     // 当前角速度 (rad/s)
-    float target_av;      // 目标角速度 (rad/s)
-    float pid_max_output; // PID最大输出限制
+  float pid_output;     // PID输出（CAN指令值）
+  float current_av;     // 当前角速度 (rad/s)
+  float target_av;      // 目标角速度 (rad/s)
+  float pid_max_output; // PID最大输出限制
 } PowerMotorObj_t;
 
 /**
  * @brief 功率控制器配置
  */
 typedef struct {
-    // RLS初始参数
-    float k1_init;     // 转速损耗系数初始值
-    float k2_init;     // 力矩损耗系数初始值
-    float k3;          // 静态功率损耗（固定）
-    float rls_lambda;  // RLS遗忘因子
+  // RLS初始参数
+  float k1_init;    // 转速损耗系数初始值
+  float k2_init;    // 力矩损耗系数初始值
+  float k3;         // 静态功率损耗（固定）
+  float rls_lambda; // RLS遗忘因子
 
-    // 电机参数
-    float torque_constant;   // 电机转矩常数 (Nm/A)
-    float current_scale;     // CAN指令到电流的转换系数
+  // 电机参数
+  float torque_constant; // 电机转矩常数 (Nm/A)
+  float current_scale;   // CAN指令到电流的转换系数
 } PowerControllerConfig_t;
 
 /**
  * @brief 功率控制状态（可供外部查询）
  */
 typedef struct {
-    // 实时参数
-    float k1;               // 当前k1参数
-    float k2;               // 当前k2参数
-    
-    // 功率限制
-    float max_power_limit;  // 当前功率上限
-    float power_upper;      // 功率上限
-    float power_lower;      // 功率下限
-    
-    // 功率统计
-    float estimated_power;  // 估算功率
-    float sum_cmd_power;    // 指令功率总和
-    
-    // 能量状态
-    float energy_feedback;  // 能量反馈
-    uint8_t cap_online;     // 电容在线标志
-    
-    // 错误标志
-    uint8_t rls_enabled;    // RLS使能状态
+  // 实时参数
+  float k1; // 当前k1参数
+  float k2; // 当前k2参数
+
+  // 功率限制
+  float max_power_limit; // 当前功率上限
+  float power_upper;     // 功率上限
+  float power_lower;     // 功率下限
+
+  // 功率统计
+  float estimated_power; // 估算功率
+  float sum_cmd_power;   // 指令功率总和
+
+  // 能量状态
+  float energy_feedback; // 能量反馈
+  uint8_t cap_online;    // 电容在线标志
+
+  // 错误标志
+  uint8_t rls_enabled; // RLS使能状态
 } PowerControllerStatus_t;
 
 /* ======================== 接口函数声明 ======================== */
@@ -117,9 +117,8 @@ void PowerGetLimitedOutput(PowerMotorObj_t motor_objs[4], float output[4]);
  * @param chassis_power_buffer 功率缓冲
  * @param chassis_power 当前功率
  */
-void PowerUpdateRefereeData(float chassis_power_limit, 
-                           float chassis_power_buffer,
-                           float chassis_power);
+void PowerUpdateRefereeData(float chassis_power_limit,
+                            float chassis_power_buffer, float chassis_power);
 
 /**
  * @brief 更新超级电容数据
@@ -139,7 +138,7 @@ void PowerUpdateMotorFeedback(float motor_speeds[4], float motor_torques[4]);
  * @brief 获取功率控制器状态
  * @return 功率控制器状态结构体指针
  */
-const PowerControllerStatus_t* PowerGetStatus(void);
+const PowerControllerStatus_t *PowerGetStatus(void);
 
 /**
  * @brief 设置RLS使能状态
@@ -154,4 +153,3 @@ void PowerSetRLSEnable(uint8_t enable);
 void PowerSetUserLimit(float power_limit);
 
 #endif // POWER_CONTROLLER_H
-

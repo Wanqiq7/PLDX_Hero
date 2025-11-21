@@ -246,13 +246,13 @@ void RLSUpdate(RLSInstance *rls, float sample_vector[2], float actual_output) {
   phi_T_P_phi = phi[0] * P_phi[0] + phi[1] * P_phi[1];
 
   // 计算分母 λ + φ^T(k)*P(k-1)*φ(k)
-  denominator = rls->lambda + phi_T_P_phi / rls->lambda;
+  denominator = rls->lambda + phi_T_P_phi;
 
   // 防止除零
   if (fabsf(denominator) < 1e-10f)
     return;
 
-  // 计算增益向量 K(k) = P(k-1)*φ(k) / [λ + φ^T(k)*P(k-1)*φ(k)] / λ
+  // 计算增益向量 K(k) = P(k-1)*φ(k) / [λ + φ^T(k)*P(k-1)*φ(k)]
   K[0] = P_phi[0] / denominator;
   K[1] = P_phi[1] / denominator;
 
@@ -269,15 +269,17 @@ void RLSUpdate(RLSInstance *rls, float sample_vector[2], float actual_output) {
   rls->params_vector[0] += K[0] * error;
   rls->params_vector[1] += K[1] * error;
 
-  // 限制参数在合理范围内
-  if (rls->params_vector[0] < 1e-5f)
-    rls->params_vector[0] = 1e-5f;
-  if (rls->params_vector[1] < 1e-5f)
-    rls->params_vector[1] = 1e-5f;
-  if (rls->params_vector[0] > 10.0f)
-    rls->params_vector[0] = 10.0f;
-  if (rls->params_vector[1] > 10.0f)
-    rls->params_vector[1] = 10.0f;
+  // 限制参数在合理范围内（基于M3508电机物理特性）
+  // k1: 转速损耗系数，典型值0.1-0.5（摩擦损耗）
+  // k2: 力矩平方损耗系数，典型值0.01-0.1（电阻损耗I²R）
+  if (rls->params_vector[0] < 0.01f)
+    rls->params_vector[0] = 0.01f;
+  if (rls->params_vector[1] < 0.001f)
+    rls->params_vector[1] = 0.001f;
+  if (rls->params_vector[0] > 0.35f)
+    rls->params_vector[0] = 0.35f;
+  if (rls->params_vector[1] > 3.2f) // 放宽上限，允许RLS探索更大范围
+    rls->params_vector[1] = 3.2f;
 
   // 计算 K(k) * φ^T(k)
   K_phi_T[0] = K[0] * phi[0]; // K[0] * phi[0]

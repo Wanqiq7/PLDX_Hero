@@ -1,155 +1,182 @@
 /**
  * @file master_process.c
- * @author neozng
- * @brief  module for recv&send vision data
- * @version beta
- * @date 2022-11-03
- * @todo 增加对串口调试助手协议的支持,包括vofa和serial debug
- * @copyright Copyright (c) 2022
- *
+ * @brief 视觉CAN通信模块
+ * @note 实现与视觉小电脑的双向CAN通信：
+ *       - 接收视觉控制指令（0xff帧）
+ *       - 发送IMU四元数数据
  */
+
 #include "master_process.h"
-#include "seasky_protocol.h"
-#include "daemon.h"
+#include "bsp_can.h"
 #include "bsp_log.h"
-#include "robot_def.h"
+#include "daemon.h"
+#include "stdlib.h"
+#include "string.h"
 
-static Vision_Recv_s recv_data;
-static Vision_Send_s send_data;
-static DaemonInstance *vision_daemon_instance;
+/* 模块私有变量 */
+static CANInstance *vision_can_ins = NULL;   // CAN实例
+static DaemonInstance *vision_daemon = NULL; // 守护进程实例
+static Vision_Recv_s vision_recv_data;       // 视觉接收数据
+static uint16_t vision_tx_id = 0x100;        // 四元数发送ID（默认值）
 
-void VisionSetFlag(Enemy_Color_e enemy_color, Work_Mode_e work_mode, Bullet_Speed_e bullet_speed)
-{
-    send_data.enemy_color = enemy_color;
-    send_data.work_mode = work_mode;
-    send_data.bullet_speed = bullet_speed;
-}
+/* 前向声明 */
+static void VisionCANRxCallback(CANInstance *can_ins);
+static void VisionOfflineCallback(void *owner);
 
-void VisionSetAltitude(float yaw, float pitch, float roll)
-{
-    send_data.yaw = yaw;
-    send_data.pitch = pitch;
-    send_data.roll = roll;
+/**
+ * @brief 视觉CAN接收回调函数
+ * @param can_ins CAN实例指针
+ * @note 解析0xff帧的视觉控制数据
+ */
+static void VisionCANRxCallback(CANInstance *can_ins) {
+  // 解析接收到的数据（8字节）
+  // 数据格式参考 Vision_CAN_Ctrl_s:
+  // [0]: control - 控制标志
+  // [1]: shoot - 射击标志
+  // [2-3]: yaw (int16, 小端序)
+  // [4-5]: pitch (int16, 小端序)
+  // [6-7]: horizon_distance (int16, 小端序) - 暂未使用
+
+  uint8_t *rx_data = can_ins->rx_buff;
+
+  // 解析控制标志
+  uint8_t control = rx_data[0];
+  uint8_t shoot = rx_data[1];
+
+  // 解析角度数据（int16小端序，需要转换为float）
+  // 假设视觉端发送的角度已经是度数，精度为0.01度
+  int16_t yaw_raw = (int16_t)(rx_data[2] | (rx_data[3] << 8));
+  int16_t pitch_raw = (int16_t)(rx_data[4] | (rx_data[5] << 8));
+
+  // 转换为浮点角度（假设精度为0.01度）
+  vision_recv_data.yaw = (float)yaw_raw * 0.01f;
+  vision_recv_data.pitch = (float)pitch_raw * 0.01f;
+
+  // 解析目标状态
+  // control字段映射：
+  // bit0-1: fire_mode (NO_FIRE=0, AUTO_FIRE=1, AUTO_AIM=2)
+  // bit2-3: target_state (NO_TARGET=0, TARGET_CONVERGING=1, READY_TO_FIRE=2)
+  vision_recv_data.fire_mode = (Fire_Mode_e)(control & 0x03);
+  vision_recv_data.target_state = (Target_State_e)((control >> 2) & 0x03);
+
+  // shoot字段映射目标类型
+  vision_recv_data.target_type = (Target_Type_e)(shoot & 0x0F);
+
+  // 喂狗，表示视觉模块在线
+  DaemonReload(vision_daemon);
 }
 
 /**
- * @brief 离线回调函数,将在daemon.c中被daemon task调用
- * @attention 由于HAL库的设计问题,串口开启DMA接收之后同时发送有概率出现__HAL_LOCK()导致的死锁,使得无法
- *            进入接收中断.通过daemon判断数据更新,重新调用服务启动函数以解决此问题.
- *
- * @param id vision_usart_instance的地址,此处没用.
+ * @brief 视觉模块离线回调
+ * @param owner 模块拥有者指针（未使用）
  */
-static void VisionOfflineCallback(void *id)
-{
-#ifdef VISION_USE_UART
-    USARTServiceInit(vision_usart_instance);
-#endif // !VISION_USE_UART
-    LOGWARNING("[vision] vision offline, restart communication.");
-}
-
-#ifdef VISION_USE_UART
-
-#include "bsp_usart.h"
-
-static USARTInstance *vision_usart_instance;
-
-/**
- * @brief 接收解包回调函数,将在bsp_usart.c中被usart rx callback调用
- * @todo  1.提高可读性,将get_protocol_info的第四个参数增加一个float类型buffer
- *        2.添加标志位解码
- */
-static void DecodeVision()
-{
-    uint16_t flag_register;
-    DaemonReload(vision_daemon_instance); // 喂狗
-    get_protocol_info(vision_usart_instance->recv_buff, &flag_register, (uint8_t *)&recv_data.pitch);
-    // TODO: code to resolve flag_register;
-}
-
-Vision_Recv_s *VisionInit(UART_HandleTypeDef *_handle)
-{
-    USART_Init_Config_s conf;
-    conf.module_callback = DecodeVision;
-    conf.recv_buff_size = VISION_RECV_SIZE;
-    conf.usart_handle = _handle;
-    vision_usart_instance = USARTRegister(&conf);
-
-    // 为master process注册daemon,用于判断视觉通信是否离线
-    Daemon_Init_Config_s daemon_conf = {
-        .callback = VisionOfflineCallback, // 离线时调用的回调函数,会重启串口接收
-        .owner_id = vision_usart_instance,
-        .reload_count = 10,
-    };
-    vision_daemon_instance = DaemonRegister(&daemon_conf);
-
-    return &recv_data;
+static void VisionOfflineCallback(void *owner) {
+  UNUSED(owner);
+  // 视觉离线时，重置接收数据
+  memset(&vision_recv_data, 0, sizeof(Vision_Recv_s));
+  vision_recv_data.target_state = NO_TARGET;
+  vision_recv_data.fire_mode = NO_FIRE;
+  LOGWARNING("[vision] Vision module offline!");
 }
 
 /**
- * @brief 发送函数
- *
- * @param send 待发送数据
- *
+ * @brief 初始化视觉CAN通信模块
+ * @param config 视觉模块初始化配置结构体指针
+ * @return Vision_Recv_s* 返回视觉接收数据指针
  */
-void VisionSend()
-{
-    // buff和txlen必须为static,才能保证在函数退出后不被释放,使得DMA正确完成发送
-    // 析构后的陷阱需要特别注意!
-    static uint16_t flag_register;
-    static uint8_t send_buff[VISION_SEND_SIZE];
-    static uint16_t tx_len;
-    // TODO: code to set flag_register
-    flag_register = 30 << 8 | 0b00000001;
-    // 将数据转化为seasky协议的数据包
-    get_protocol_send_data(0x02, flag_register, &send_data.yaw, 3, send_buff, &tx_len);
-    USARTSend(vision_usart_instance, send_buff, tx_len, USART_TRANSFER_DMA); // 和视觉通信使用IT,防止和接收使用的DMA冲突
-    // 此处为HAL设计的缺陷,DMASTOP会停止发送和接收,导致再也无法进入接收中断.
-    // 也可在发送完成中断中重新启动DMA接收,但较为复杂.因此,此处使用IT发送.
-    // 若使用了daemon,则也可以使用DMA发送.
+Vision_Recv_s *VisionInit(Vision_Init_Config_s *config) {
+  // 参数检查
+  if (config == NULL || config->can_handle == NULL) {
+    LOGERROR("[vision] VisionInit: Invalid config!");
+    return NULL;
+  }
+
+  // 保存发送ID
+  vision_tx_id = config->tx_id;
+
+  // 初始化接收数据结构
+  memset(&vision_recv_data, 0, sizeof(Vision_Recv_s));
+
+  // 注册CAN实例
+  CAN_Init_Config_s can_config = {
+      .can_handle = config->can_handle,
+      .tx_id = config->tx_id, // 四元数发送ID
+      .rx_id = config->rx_id, // 视觉控制帧接收ID
+      .can_module_callback = VisionCANRxCallback,
+      .id = NULL, // 本模块不需要额外的id标识
+  };
+  vision_can_ins = CANRegister(&can_config);
+
+  if (vision_can_ins == NULL) {
+    LOGERROR("[vision] VisionInit: CAN register failed!");
+    return NULL;
+  }
+
+  // 注册守护进程（离线检测）
+  Daemon_Init_Config_s daemon_config = {
+      .reload_count = config->reload_count,
+      .callback = VisionOfflineCallback,
+      .owner_id = NULL,
+  };
+  vision_daemon = DaemonRegister(&daemon_config);
+
+  if (vision_daemon == NULL) {
+    LOGERROR("[vision] VisionInit: Daemon register failed!");
+    return NULL;
+  }
+
+  LOGINFO("[vision] Vision CAN module initialized. RX_ID=0x%X, TX_ID=0x%X",
+          config->rx_id, config->tx_id);
+
+  return &vision_recv_data;
 }
 
-#endif // VISION_USE_UART
-
-#ifdef VISION_USE_VCP
-
-#include "bsp_usb.h"
-static uint8_t *vis_recv_buff;
-
-static void DecodeVision(uint16_t recv_len)
-{
-    uint16_t flag_register;
-    get_protocol_info(vis_recv_buff, &flag_register, (uint8_t *)&recv_data.pitch);
-    // TODO: code to resolve flag_register;
+/**
+ * @brief 查询视觉模块在线状态
+ * @return uint8_t 1-在线，0-离线或未初始化
+ */
+uint8_t VisionIsOnline(void) {
+  if (vision_daemon == NULL) {
+    return 0;
+  }
+  return DaemonIsOnline(vision_daemon);
 }
 
-/* 视觉通信初始化 */
-Vision_Recv_s *VisionInit(UART_HandleTypeDef *_handle)
-{
-    UNUSED(_handle); // 仅为了消除警告
-    USB_Init_Config_s conf = {.rx_cbk = DecodeVision};
-    vis_recv_buff = USBInit(conf);
+/**
+ * @brief 发送四元数数据到视觉小电脑
+ * @note 使用int16压缩编码，单帧8字节传输，大端序
+ *       数据格式: [qx_high, qx_low, qy_high, qy_low, qz_high, qz_low, qw_high,
+ * qw_low] 解码公式: float = int16_val / 32767.0f
+ *
+ * @param x 四元数x分量 (范围[-1, 1])
+ * @param y 四元数y分量 (范围[-1, 1])
+ * @param z 四元数z分量 (范围[-1, 1])
+ * @param w 四元数w分量 (范围[-1, 1])
+ */
+void VisionSendQuaternion(float x, float y, float z, float w) {
+  if (vision_can_ins == NULL) {
+    return;
+  }
 
-    // 为master process注册daemon,用于判断视觉通信是否离线
-    Daemon_Init_Config_s daemon_conf = {
-        .callback = VisionOfflineCallback, // 离线时调用的回调函数,会重启串口接收
-        .owner_id = NULL,
-        .reload_count = 5, // 50ms
-    };
-    vision_daemon_instance = DaemonRegister(&daemon_conf);
+  // 四元数压缩：float -> int16 (范围[-32767, 32767])
+  // 编码公式：int16_val = float_val * 32767.0f
+  int16_t qx = (int16_t)(x * 32767.0f);
+  int16_t qy = (int16_t)(y * 32767.0f);
+  int16_t qz = (int16_t)(z * 32767.0f);
+  int16_t qw = (int16_t)(w * 32767.0f);
 
-    return &recv_data;
+  // 填充发送缓冲区（大端序）
+  // [qx_high, qx_low, qy_high, qy_low, qz_high, qz_low, qw_high, qw_low]
+  vision_can_ins->tx_buff[0] = (uint8_t)(qx >> 8);   // qx high
+  vision_can_ins->tx_buff[1] = (uint8_t)(qx & 0xFF); // qx low
+  vision_can_ins->tx_buff[2] = (uint8_t)(qy >> 8);   // qy high
+  vision_can_ins->tx_buff[3] = (uint8_t)(qy & 0xFF); // qy low
+  vision_can_ins->tx_buff[4] = (uint8_t)(qz >> 8);   // qz high
+  vision_can_ins->tx_buff[5] = (uint8_t)(qz & 0xFF); // qz low
+  vision_can_ins->tx_buff[6] = (uint8_t)(qw >> 8);   // qw high
+  vision_can_ins->tx_buff[7] = (uint8_t)(qw & 0xFF); // qw low
+
+  // 设置DLC为8字节并发送
+  CANSetDLC(vision_can_ins, 8);
+  CANTransmit(vision_can_ins, 1);
 }
-
-void VisionSend()
-{
-    static uint16_t flag_register;
-    static uint8_t send_buff[VISION_SEND_SIZE];
-    static uint16_t tx_len;
-    // TODO: code to set flag_register
-    flag_register = 30 << 8 | 0b00000001;
-    // 将数据转化为seasky协议的数据包
-    get_protocol_send_data(0x02, flag_register, &send_data.yaw, 3, send_buff, &tx_len);
-    USBTransmit(send_buff, tx_len);
-}
-
-#endif // VISION_USE_VCP

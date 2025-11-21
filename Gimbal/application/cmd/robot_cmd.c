@@ -67,9 +67,13 @@ static Chassis_Ctrl_Cmd_s
 static Chassis_Upload_Data_s
     chassis_fetch_data; // 从底盘应用接收的反馈信息信息,底盘功率枪口热量与底盘运动状态等
 
-static RC_ctrl_t *rc_data;              // 遥控器数据,初始化时返回
-static Vision_Recv_s *vision_recv_data; // 视觉接收数据指针,初始化时返回
-// static Vision_Send_s vision_send_data;  // 视觉发送数据
+static RC_ctrl_t *rc_data; // 遥控器数据,初始化时返回
+
+// 视觉控制消息(通过message center与vision应用通信)
+static Publisher_t *vision_cmd_pub;           // 视觉控制指令发布者
+static Subscriber_t *vision_data_sub;         // 视觉处理数据订阅者
+static Vision_Ctrl_Cmd_s vision_cmd_send;     // 发送给视觉应用的控制指令
+static Vision_Upload_Data_s vision_data_recv; // 从视觉应用接收的处理数据
 
 static Publisher_t *gimbal_cmd_pub;            // 云台控制消息发布者
 static Subscriber_t *gimbal_feed_sub;          // 云台反馈信息订阅者
@@ -89,50 +93,14 @@ BMI088_Data_t bmi088_data;
 static float keyboard_vx_cmd_planned = 0.0f;
 static float keyboard_vy_cmd_planned = 0.0f;
 void RobotCMDInit() {
-  // BMI088_Init_Config_s bmi088_config = {
-  //     .cali_mode = BMI088_CALIBRATE_ONLINE_MODE,
-  //     .work_mode = BMI088_BLOCK_TRIGGER_MODE,
-  //     .spi_acc_config = {
-  //         .spi_handle = &hspi1,
-  //         .GPIOx = GPIOA,
-  //         .cs_pin = GPIO_PIN_4,
-  //         .spi_work_mode = SPI_DMA_MODE,
-  //     },
-  //     .acc_int_config = {
-  //         .GPIOx = GPIOC,
-  //         .GPIO_Pin = GPIO_PIN_4,
-  //         .exti_mode = GPIO_EXTI_MODE_RISING,
-  //     },
-  //     .spi_gyro_config = {
-  //         .spi_handle = &hspi1,
-  //         .GPIOx = GPIOB,
-  //         .cs_pin = GPIO_PIN_0,
-  //         .spi_work_mode = SPI_DMA_MODE,
-  //     },
-  //     .gyro_int_config = {
-  //         .GPIO_Pin = GPIO_PIN_5,
-  //         .GPIOx = GPIOC,
-  //         .exti_mode = GPIO_EXTI_MODE_RISING,
-  //     },
-  //     .heat_pwm_config = {
-  //         .htim = &htim10,
-  //         .channel = TIM_CHANNEL_1,
-  //         .period = 1,
-  //     },
-  //     .heat_pid_config = {
-  //         .Kp = 0.5,
-  //         .Ki = 0,
-  //         .Kd = 0,
-  //         .DeadBand = 0.1,
-  //         .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit |
-  //         PID_Derivative_On_Measurement, .IntegralLimit = 100, .MaxOut = 100,
-  //     },
-  // };
-  // bmi088_test = BMI088Register(&bmi088_config);
   rc_data = RemoteControlInit(
       &huart3); // 修改为对应串口,注意如果是自研板dbus协议串口需选用添加了反相器的那个
-  vision_recv_data =
-      VisionInit(&huart6); // 视觉通信串口,由原来框架的US1改为适配现车的US6
+
+  // 注意: 视觉CAN通信初始化已移至 VisionAppInit() (vision.c)
+
+  // 视觉控制消息注册
+  vision_cmd_pub = PubRegister("vision_cmd", sizeof(Vision_Ctrl_Cmd_s));
+  vision_data_sub = SubRegister("vision_data", sizeof(Vision_Upload_Data_s));
 
   gimbal_cmd_pub = PubRegister("gimbal_cmd", sizeof(Gimbal_Ctrl_Cmd_s));
   gimbal_feed_sub = SubRegister("gimbal_feed", sizeof(Gimbal_Upload_Data_s));
@@ -167,66 +135,89 @@ void RobotCMDInit() {
   shoot_cmd_send.shoot_rate = 1.0f;            // 默认射频1发/秒（英雄用）
   shoot_cmd_send.lid_mode = LID_CLOSE;         // 默认弹舱盖关闭
 
+  // ⭐ 初始化视觉控制指令
+  vision_cmd_send.vision_mode = VISION_MODE_OFF; // 默认关闭视觉控制
+  vision_cmd_send.allow_auto_fire = 0;           // 默认禁止自动射击
+  vision_cmd_send.manual_yaw_offset = 0.0f;      // 无手动微调
+  vision_cmd_send.manual_pitch_offset = 0.0f;
+
   robot_state =
       ROBOT_READY; // 启动时机器人进入工作模式,后续加入所有应用初始化完成之后再进入
 }
 
-static void CalcNearCenterError(float offset_angle) {
-  static uint8_t flip_state = 0; // 车头翻转状态: 0-正向, 1-反向(180度)
-  float target_angle = 0.0f;     // 目标角度
-  float error = 0.0f;
-  float abs_error = 0.0f; // 误差绝对值
-
-#if CHASSIS_FOLLOW_ALLOW_FLIP
-  // 根据翻转状态确定目标角度
-  target_angle = flip_state ? 180.0f : 0.0f;
-
-  // 计算误差并归一化到[-180, 180],使用优化的归一化函数
-  error = theta_format(offset_angle - target_angle);
-
-  // 使用arm_math库的绝对值函数(内联优化)
-  abs_error = fabsf(error);
-
-  // 翻转状态切换逻辑:当误差超过阈值时考虑翻转
-  if (abs_error > CHASSIS_FOLLOW_FLIP_THRESHOLD) {
-    flip_state = !flip_state; // 切换翻转状态
-    // 重新计算误差
-    target_angle = flip_state ? 180.0f : 0.0f;
-    error = theta_format(offset_angle - target_angle);
-  }
-#else
-  // 不允许翻转,直接使用offset_angle作为误差
-  error = offset_angle;
-#endif
-
-  // 误差限幅,使用arm_math的float_constrain功能
-  error =
-      float_constrain(error, -CHASSIS_FOLLOW_MAX_ERR, CHASSIS_FOLLOW_MAX_ERR);
-
-  // 存储就近回中误差,供底盘PID控制器使用
-  chassis_cmd_send.near_center_error = error;
+/**
+ * @brief 快速角度归一化到[-180, 180]（内联优化）
+ * @note 输入范围假设在[-360, 360]内（单圈角度差），最多需要一次调整
+ */
+static inline float NormalizeAngleFast(float angle) {
+  if (angle > 180.0f)
+    return angle - 360.0f;
+  if (angle <= -180.0f)
+    return angle + 360.0f;
+  return angle;
 }
 
-static void CalcOffsetAngle() {
-  // 别名angle提高可读性,不然太长了不好看,虽然基本不会动这个函数
-  static float angle;
-  angle = gimbal_fetch_data
-              .yaw_motor_single_round_angle; // 从云台获取的当前yaw电机单圈角度
-#if YAW_ECD_GREATER_THAN_4096                // 如果大于180度
-  if (angle > YAW_ALIGN_ANGLE && angle <= 180.0f + YAW_ALIGN_ANGLE)
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE;
-  else if (angle > 180.0f + YAW_ALIGN_ANGLE)
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE - 360.0f;
-  else
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE;
-#else // 小于180度
-  if (angle > YAW_ALIGN_ANGLE)
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE;
-  else if (angle <= YAW_ALIGN_ANGLE && angle >= YAW_ALIGN_ANGLE - 180.0f)
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE;
-  else
-    chassis_cmd_send.offset_angle = angle - YAW_ALIGN_ANGLE + 360.0f;
+/**
+ * @brief 计算云台-底盘角度关系（高性能优化版本）
+ *        同时计算 offset_angle（坐标变换用）和 near_center_error（跟随控制用）
+ *
+ * @note 优化要点：
+ *       1. 统一角度归一化逻辑，消除条件编译分支
+ *       2. 利用数学对称性减少重复计算
+ *       3. 使用内联函数和条件表达式优化指令级性能
+ */
+static void CalcGimbalChassisAngle(void) {
+  // ============================================================
+  // Part 1: 计算 offset_angle（统一归一化逻辑）
+  // ============================================================
+  float yaw_angle = gimbal_fetch_data.yaw_motor_single_round_angle;
+  float raw_diff = yaw_angle - YAW_ALIGN_ANGLE;
+
+  // 快速归一化到 [-180, 180]
+  // 输入范围：yaw_angle ∈ [0, 360], YAW_ALIGN_ANGLE ∈ [0, 360]
+  // 差值范围：raw_diff ∈ [-360, 360]，最多需要一次调整
+  raw_diff = NormalizeAngleFast(raw_diff);
+  chassis_cmd_send.offset_angle = raw_diff;
+
+  // ============================================================
+  // Part 2: 就近回中（Flip 逻辑优化）
+  // ============================================================
+#if CHASSIS_FOLLOW_ALLOW_FLIP
+  static uint8_t flip_state = 0;
+
+  // 1. 根据当前翻转状态计算误差
+  //    flip_state = 0: target = 0°,   error = raw_diff
+  //    flip_state = 1: target = 180°, error = NormalizeAngleFast(raw_diff -
+  //    180°)
+  float error = raw_diff;
+  if (flip_state) {
+    error = NormalizeAngleFast(raw_diff - 180.0f);
+  }
+
+  // 2. 检查是否需要切换翻转状态（迟滞逻辑）
+  //    当误差绝对值超过阈值时，说明底盘"背对"云台，触发翻转
+  if (fabsf(error) > CHASSIS_FOLLOW_FLIP_THRESHOLD) {
+    flip_state = !flip_state;
+
+    // 翻转后利用数学对称性直接计算新误差：
+    // error_new = error_old ± 180° (归一化)
+    // 若 error > 0: error_new = error - 180
+    // 若 error < 0: error_new = error + 180
+    error = (error > 0.0f) ? (error - 180.0f) : (error + 180.0f);
+  }
+#else
+  float error = chassis_cmd_send.offset_angle;
 #endif
+
+  // ============================================================
+  // Part 3: 限幅（优化为 if-else if 结构，便于编译器生成 VMIN/VMAX 指令）
+  // ============================================================
+  if (error > CHASSIS_FOLLOW_MAX_ERR)
+    error = CHASSIS_FOLLOW_MAX_ERR;
+  else if (error < -CHASSIS_FOLLOW_MAX_ERR)
+    error = -CHASSIS_FOLLOW_MAX_ERR;
+
+  chassis_cmd_send.near_center_error = error;
 }
 
 /**
@@ -295,25 +286,30 @@ static void RemoteControlSet() {
   gimbal_cmd_send.pitch += pitch_increment; // Pitch: 角度制
   LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch); // 添加pitch角度限位保护
 
-  // 发射参数
-  // 右侧开关控制发射机构 - 三档互斥逻辑
-  // [下档]: 不操作发射机构（摩擦轮停止，拨盘停止）
-  // [中档]: 只转动摩擦轮（摩擦轮开启，拨盘停止）
-  // [上档]: 摩擦轮转动 + 拨弹连发（摩擦轮开启，拨盘连发）
+  // 发射参数 + 视觉模式联动
+  // 右侧开关控制发射机构 + 视觉模式 - 三档互斥逻辑
+  // [下档]: 全部停止（摩擦轮停止，拨盘停止，视觉关闭）
+  // [中档]: 仅摩擦轮转动（摩擦轮开启，拨盘停止，视觉关闭）
+  // [上档]: 自瞄模式（摩擦轮开启，单发，自瞄启用，允许自动射击）
   if (switch_is_down(rc_data[TEMP].rc.switch_right)) {
     // 下档：全部停止
     shoot_cmd_send.friction_mode = FRICTION_OFF;
     shoot_cmd_send.load_mode = LOAD_STOP;
+    vision_cmd_send.vision_mode = VISION_MODE_OFF; // 关闭视觉
+    vision_cmd_send.allow_auto_fire = 0;
   } else if (switch_is_mid(rc_data[TEMP].rc.switch_right)) {
     // 中档：仅摩擦轮转动
     shoot_cmd_send.friction_mode = FRICTION_ON;
     shoot_cmd_send.load_mode = LOAD_STOP;
+    vision_cmd_send.vision_mode = VISION_MODE_OFF; // 关闭视觉
+    vision_cmd_send.allow_auto_fire = 0;
   } else if (switch_is_up(rc_data[TEMP].rc.switch_right)) {
-    // 上档：摩擦轮转动 + 单发模式（英雄机器人标准配置）
+    // 上档：自瞄模式（英雄机器人标准配置）
     shoot_cmd_send.friction_mode = FRICTION_ON;
-    shoot_cmd_send.load_mode =
-        LOAD_1_BULLET;                // ✅ 单发模式：使用angle_PID精确控制位置
-    shoot_cmd_send.shoot_rate = 1.0f; // 1Hz射频（每秒1发，不应期1000ms）
+    shoot_cmd_send.load_mode = LOAD_STOP; // ⭐ 停止拨盘，等待视觉驱动
+    shoot_cmd_send.shoot_rate = 1.0f;     // 1Hz射频（每秒1发，不应期1000ms）
+    vision_cmd_send.vision_mode = VISION_MODE_AUTO_AIM; // ⭐ 启用自瞄
+    vision_cmd_send.allow_auto_fire = 1;                // ⭐ 授权视觉控制射击
 
     // 如果需要连发测试速度环，改为：
     // shoot_cmd_send.load_mode = LOAD_BURSTFIRE;
@@ -367,8 +363,10 @@ static void MouseKeySet() {
   // 鼠标DPI通常在400-1600之间，会产生高频噪声，需要滤波
   // Yaw: α=0.85，截止频率约62.8Hz，保持瞄准精度
   // Pitch: α=0.80，截止频率约51Hz，避免垂直抖动
-  mouse_yaw_increment = LowPassFilter_Float(raw_mouse_yaw, 0.85f, &mouse_yaw_increment);
-  mouse_pitch_increment = LowPassFilter_Float(raw_mouse_pitch, 0.80f, &mouse_pitch_increment);
+  mouse_yaw_increment =
+      LowPassFilter_Float(raw_mouse_yaw, 0.85f, &mouse_yaw_increment);
+  mouse_pitch_increment =
+      LowPassFilter_Float(raw_mouse_pitch, 0.80f, &mouse_pitch_increment);
 
   gimbal_cmd_send.yaw += mouse_yaw_increment;
   gimbal_cmd_send.pitch += mouse_pitch_increment;
@@ -449,6 +447,29 @@ static void MouseKeySet() {
 }
 
 /**
+ * @brief 视觉数据融合，当视觉有效时覆盖云台和发射控制
+ *
+ */
+static void VisionControlSet() {
+  // 仅当视觉模式启用且视觉数据有效时才接管控制
+  if (vision_cmd_send.vision_mode != VISION_MODE_OFF &&
+      vision_data_recv.vision_valid) {
+    // 使用视觉数据覆盖云台目标角度（完全接管云台控制）
+    gimbal_cmd_send.yaw = vision_data_recv.yaw;
+    gimbal_cmd_send.pitch = vision_data_recv.pitch;
+    LIMIT_PITCH_ANGLE(gimbal_cmd_send.pitch);
+
+    // ⭐ 视觉驱动发射：根据 should_fire 决定是否触发拨弹
+    if (vision_data_recv.should_fire) {
+      shoot_cmd_send.load_mode = LOAD_BURSTFIRE; // 视觉确认可以射击，触发连射
+      // friction_mode 已在 RemoteControlSet() 上档中设置为 ON，无需重复
+    } else {
+      shoot_cmd_send.load_mode = LOAD_STOP; // 视觉未确认，停止拨盘
+    }
+  }
+}
+
+/**
  * @brief  紧急停止,包括遥控器左上侧拨轮打满/重要模块离线/双板通信失效等
  *         停止的阈值'300'待修改成合适的值,或改为开关控制.
  *
@@ -494,17 +515,20 @@ void RobotCMDTask() {
 #endif // GIMBAL_BOARD
   SubGetMessage(shoot_feed_sub, &shoot_fetch_data);
   SubGetMessage(gimbal_feed_sub, &gimbal_fetch_data);
+  SubGetMessage(vision_data_sub, &vision_data_recv); // 获取视觉处理数据
 
-  // 根据gimbal的反馈值计算云台和底盘正方向的夹角,不需要传参,通过static私有变量完成
-  CalcOffsetAngle();
-  // 计算就近回中误差和微分项(支持车头翻转优化)
-  CalcNearCenterError(chassis_cmd_send.offset_angle);
-  // 遥控器控制
+  // 计算云台-底盘角度关系（offset_angle 和 near_center_error）
+  CalcGimbalChassisAngle();
+
+  // 控制逻辑优先级（从低到高）：
+  // 1️⃣ 遥控器基础控制（提供默认控制量）
   RemoteControlSet();
-  EmergencyHandler(); // 处理模块离线和遥控器急停等紧急情况
 
-  // 设置视觉发送数据,还需增加加速度和角速度数据
-  // VisionSetFlag(chassis_fetch_data.enemy_color,,chassis_fetch_data.bullet_speed)
+  // 2️⃣ 视觉数据融合（当视觉有效时覆盖云台和发射控制）
+  VisionControlSet();
+
+  // 3️⃣ 紧急停止处理（最高优先级，强制停止所有模块）
+  EmergencyHandler();
 
   // 推送消息,双板通信,视觉通信等
   // 其他应用所需的控制数据在remotecontrolsetmode和mousekeysetmode中完成设置
@@ -516,4 +540,5 @@ void RobotCMDTask() {
 #endif // GIMBAL_BOARD
   PubPushMessage(shoot_cmd_pub, (void *)&shoot_cmd_send);
   PubPushMessage(gimbal_cmd_pub, (void *)&gimbal_cmd_send);
+  PubPushMessage(vision_cmd_pub, (void *)&vision_cmd_send); // 发布视觉控制指令
 }
