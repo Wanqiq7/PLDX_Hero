@@ -16,7 +16,7 @@
 static RLSInstance power_rls;
 
 // 功率模型参数（动态更新）
-static float power_k1 = 0.32f;
+static float power_k1 = 0.22f;
 static float power_k2 = 1.2f;
 static float power_k3 = 5.2f;
 
@@ -56,7 +56,7 @@ static struct {
 
 // 控制器状态（供外部查询）
 static PowerControllerStatus_t controller_status = {
-    .k1 = 0.32f,
+    .k1 = 0.22f,
     .k2 = 1.2f,
     .max_power_limit = 100.0f,
     .rls_enabled = 1,
