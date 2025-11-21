@@ -18,6 +18,7 @@ static CANInstance *vision_can_ins = NULL;   // CAN实例
 static DaemonInstance *vision_daemon = NULL; // 守护进程实例
 static Vision_Recv_s vision_recv_data;       // 视觉接收数据
 static uint16_t vision_tx_id = 0x100;        // 四元数发送ID（默认值）
+static float vision_horizon_distance = 0.0f; // 目标水平距离（暂存，供后续扩展）
 
 /* 前向声明 */
 static void VisionCANRxCallback(CANInstance *can_ins);
@@ -30,12 +31,12 @@ static void VisionOfflineCallback(void *owner);
  */
 static void VisionCANRxCallback(CANInstance *can_ins) {
   // 解析接收到的数据（8字节）
-  // 数据格式参考 Vision_CAN_Ctrl_s:
+  // 数据格式参考 Vision_CAN_Ctrl_s 和 can2.c:
   // [0]: control - 控制标志
   // [1]: shoot - 射击标志
-  // [2-3]: yaw (int16, 小端序)
-  // [4-5]: pitch (int16, 小端序)
-  // [6-7]: horizon_distance (int16, 小端序) - 暂未使用
+  // [2-3]: yaw (int16, 大端序, 精度0.0001°)
+  // [4-5]: pitch (int16, 大端序, 精度0.0001°)
+  // [6-7]: horizon_distance (int16, 大端序, 精度0.0001m)
 
   uint8_t *rx_data = can_ins->rx_buff;
 
@@ -43,14 +44,18 @@ static void VisionCANRxCallback(CANInstance *can_ins) {
   uint8_t control = rx_data[0];
   uint8_t shoot = rx_data[1];
 
-  // 解析角度数据（int16小端序，需要转换为float）
-  // 假设视觉端发送的角度已经是度数，精度为0.01度
-  int16_t yaw_raw = (int16_t)(rx_data[2] | (rx_data[3] << 8));
-  int16_t pitch_raw = (int16_t)(rx_data[4] | (rx_data[5] << 8));
+  // 解析角度数据（int16大端序，高字节在前）
+  // 精度：0.0001° (与can2.c保持一致，使用/1e4转换)
+  int16_t yaw_raw = (int16_t)((rx_data[2] << 8) | rx_data[3]);
+  int16_t pitch_raw = (int16_t)((rx_data[4] << 8) | rx_data[5]);
 
-  // 转换为浮点角度（假设精度为0.01度）
-  vision_recv_data.yaw = (float)yaw_raw * 0.01f;
-  vision_recv_data.pitch = (float)pitch_raw * 0.01f;
+  // 转换为浮点角度（精度0.0001°，即/1e4）
+  vision_recv_data.yaw = (float)yaw_raw / 1e4f;
+  vision_recv_data.pitch = (float)pitch_raw / 1e4f;
+
+  // 解析水平距离（暂存，供后续扩展使用）
+  int16_t distance_raw = (int16_t)((rx_data[6] << 8) | rx_data[7]);
+  vision_horizon_distance = (float)distance_raw / 1e4f;
 
   // 解析目标状态
   // control字段映射：
